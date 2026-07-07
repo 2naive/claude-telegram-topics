@@ -9,7 +9,11 @@
 // own folder name, in its original case.
 
 import { spawnSync } from "node:child_process";
+import { homedir } from "node:os";
+import { readdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { normalizePath, displayName } from "./paths.ts";
+import { pickSessionName } from "./routing.ts";
 import { SESSION_NAME_OVERRIDE } from "./config.ts";
 
 let cachedRaw: string | null = null;
@@ -46,15 +50,42 @@ export function projectName(): string {
   return displayName(rawProjectPath());
 }
 
-let cachedLabel: string | null = null;
+// --- Session label (the tag shown when >1 session shares one topic) ---
+//
+// Preferred source: the session NAME the user set via /rename. Claude Code does
+// not hand that name to MCP servers, but it DOES set CLAUDE_CODE_SESSION_ID and
+// records each session (keyed by pid) under <config>/sessions/*.json with
+// matching `sessionId` + `name` fields — rewritten whenever the name changes. So
+// we look it up there. Falls back to the git branch, then (leader-side) an id
+// slice.
 
-/**
- * A short label distinguishing concurrent sessions on the same project. Prefers
- * the git branch (two sessions on one repo usually differ by branch); empty when
- * unavailable, in which case the leader falls back to a slice of the session id.
- */
-export function sessionLabel(): string {
-  if (cachedLabel !== null) return cachedLabel;
+function configDir(): string {
+  return process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
+}
+
+function sessionNameFromStore(sessionId: string): string {
+  let files: string[];
+  const dir = join(configDir(), "sessions");
+  try {
+    files = readdirSync(dir);
+  } catch {
+    return ""; // no sessions dir (older Claude Code, or relocated config)
+  }
+  const entries: Array<{ sessionId?: string; name?: string; updatedAt?: number }> = [];
+  for (const f of files) {
+    if (!f.endsWith(".json")) continue;
+    try {
+      entries.push(JSON.parse(readFileSync(join(dir, f), "utf8")));
+    } catch {
+      // skip an unreadable / half-written record
+    }
+  }
+  return pickSessionName(entries, sessionId);
+}
+
+let cachedBranch: string | null = null;
+function gitBranch(): string {
+  if (cachedBranch !== null) return cachedBranch;
   try {
     const r = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], {
       cwd: process.cwd(),
@@ -64,13 +95,31 @@ export function sessionLabel(): string {
     if (r.status === 0) {
       const b = r.stdout.trim();
       if (b && b !== "HEAD") {
-        cachedLabel = b;
+        cachedBranch = b;
         return b;
       }
     }
   } catch {
-    // not a repo / detached HEAD — no branch label
+    // not a repo / detached HEAD
   }
-  cachedLabel = "";
+  cachedBranch = "";
   return "";
+}
+
+// Short TTL so a mid-session /rename is reflected without re-reading the store
+// on every outbound message.
+let labelCache: { value: string; at: number } | null = null;
+const LABEL_TTL_MS = 15_000;
+
+/**
+ * Label distinguishing concurrent sessions on one project: the /rename session
+ * name, else the git branch, else "" (the leader then uses a slice of the id).
+ */
+export function sessionLabel(): string {
+  const now = Date.now();
+  if (labelCache && now - labelCache.at < LABEL_TTL_MS) return labelCache.value;
+  const id = process.env.CLAUDE_CODE_SESSION_ID;
+  const value = (id ? sessionNameFromStore(id) : "") || gitBranch();
+  labelCache = { value, at: now };
+  return value;
 }

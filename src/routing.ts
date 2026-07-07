@@ -49,3 +49,27 @@ export function sessionPrefix(label: string, sessionCount: number): string {
 export function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n) + "…" : s;
 }
+
+/**
+ * Pick a session's display name (its `/rename` value) out of the per-pid session
+ * records Claude Code writes to ~/.claude/sessions/*.json. Matches on sessionId
+ * and, if a stale duplicate exists, prefers the most recently updated record.
+ * Pure so it can be unit-tested without touching the filesystem.
+ */
+export function pickSessionName(
+  entries: Array<{ sessionId?: string; name?: string; updatedAt?: number }>,
+  sessionId: string,
+): string {
+  let best = "";
+  let bestAt = -1;
+  for (const e of entries) {
+    if (e.sessionId === sessionId && typeof e.name === "string" && e.name.trim()) {
+      const at = typeof e.updatedAt === "number" ? e.updatedAt : 0;
+      if (at >= bestAt) {
+        bestAt = at;
+        best = e.name.trim();
+      }
+    }
+  }
+  return best;
+}

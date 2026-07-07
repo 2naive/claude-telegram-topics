@@ -4,6 +4,7 @@ import {
   permCallbackData,
   sessionPrefix,
   truncate,
+  pickSessionName,
 } from "../src/routing.ts";
 
 describe("parseCallback", () => {
@@ -65,5 +66,36 @@ describe("truncate", () => {
 
   test("cuts and ellipsizes long strings", () => {
     expect(truncate("abcdef", 3)).toBe("abc…");
+  });
+});
+
+describe("pickSessionName", () => {
+  const rows = [
+    { sessionId: "aaa", name: "other", updatedAt: 5 },
+    { sessionId: "bbb", name: "system:cct", updatedAt: 10 },
+  ];
+
+  test("returns the /rename name for the matching session", () => {
+    expect(pickSessionName(rows, "bbb")).toBe("system:cct");
+  });
+
+  test("returns empty when no session matches", () => {
+    expect(pickSessionName(rows, "zzz")).toBe("");
+  });
+
+  test("prefers the most recently updated record on a duplicate id", () => {
+    const dup = [
+      { sessionId: "bbb", name: "old", updatedAt: 1 },
+      { sessionId: "bbb", name: "new", updatedAt: 99 },
+    ];
+    expect(pickSessionName(dup, "bbb")).toBe("new");
+  });
+
+  test("ignores blank names and trims", () => {
+    const rows2 = [
+      { sessionId: "bbb", name: "   ", updatedAt: 50 },
+      { sessionId: "bbb", name: "  main  ", updatedAt: 40 },
+    ];
+    expect(pickSessionName(rows2, "bbb")).toBe("main");
   });
 });

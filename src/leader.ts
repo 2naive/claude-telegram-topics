@@ -532,6 +532,9 @@ async function handle(req: Request): Promise<Response> {
   const s = sessions.get(sid);
   if (!s) return json({ error: "unknown session" }, 404);
   s.lastActive = Date.now();
+  // Refresh the session label if the caller carried one (reflects a mid-session
+  // /rename); a no-op on requests that don't send it.
+  if (typeof body.label === "string" && body.label.trim()) s.label = body.label.trim();
 
   try {
     if (path === "/send") {

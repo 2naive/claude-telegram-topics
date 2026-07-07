@@ -113,12 +113,13 @@ async function call(
 }
 
 export async function send(text: string, options?: string[]): Promise<number> {
-  const r = await call("/send", { text, options });
+  // Carry the current session label so a mid-session /rename is reflected.
+  const r = await call("/send", { text, options, label: sessionLabel() });
   return r.messageId;
 }
 
 export async function sendFile(path: string, caption = ""): Promise<number> {
-  const r = await call("/sendFile", { path, caption });
+  const r = await call("/sendFile", { path, caption, label: sessionLabel() });
   return r.messageId;
 }
 

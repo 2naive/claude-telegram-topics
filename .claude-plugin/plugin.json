@@ -1,7 +1,7 @@
 {
   "name": "telegram-topics",
   "description": "Telegram channel for Claude Code — 1 project = 1 forum topic. Each project's session streams into its own topic in a Telegram forum group; multiple projects run concurrently. Configure with /telegram-topics:configure.",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "keywords": ["telegram", "messaging", "channel", "mcp", "forum", "topics"],
   "license": "Apache-2.0",
   "homepage": "https://github.com/2naive/claude-telegram-topics",

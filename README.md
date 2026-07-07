@@ -164,10 +164,12 @@ the session. This is the remote stand-in for reaching over to the terminal.
   folder name get separate topics. Override the title with
   `TG_TOPICS_SESSION_NAME`.
 - **Two sessions on one project** share that project's single topic. Outbound
-  messages are then prefixed with a short session tag (the git branch, or a
-  session id) so you can tell them apart. Replying to a message — or tapping its
-  buttons, or reacting to it — routes back to the exact session that sent it; a
-  fresh message with no reply target is delivered to every session on the topic.
+  messages are then prefixed with the session's name — the one you set with
+  `/rename` (falling back to the git branch, then a session id) — so you can tell
+  them apart, and a later `/rename` is reflected within seconds. Replying to a
+  message — or tapping its buttons, or reacting to it — routes back to the exact
+  session that sent it; a fresh message with no reply target is delivered to
+  every session on the topic.
 
 ## Access control
 
