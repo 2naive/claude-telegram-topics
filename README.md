@@ -86,6 +86,35 @@ claude --channels plugin:telegram-topics@claude-telegram-topics
 (During the channels research preview a non-allowlisted channel also needs
 `--dangerously-load-development-channels`.)
 
+### Autostart (one-command launch)
+
+Wrap the launch in a shell alias so a single word opens a channel-enabled
+session from any project directory.
+
+**Bash / Zsh** — add to `~/.bashrc` (or `~/.zshrc`), then `source` it:
+
+```
+alias claudet='claude --channels plugin:telegram-topics@claude-telegram-topics'
+```
+
+**Windows** — drop a `claudet.cmd` anywhere on your `PATH`:
+
+```
+@claude --channels plugin:telegram-topics@claude-telegram-topics %*
+```
+
+Or, for PowerShell, add a function to `$PROFILE`:
+
+```
+function claudet { claude --channels plugin:telegram-topics@claude-telegram-topics @args }
+```
+
+Now `claudet` in any repo starts a session that streams to that project's
+topic. During the research preview, swap `--channels …` for
+`--dangerously-load-development-channels plugin:telegram-topics@claude-telegram-topics`
+— that flag takes the channel list as its own argument, so `--channels` is
+dropped rather than added.
+
 ## Use it
 
 - Messages you send to a project's topic arrive in that project's session
