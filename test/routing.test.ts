@@ -2,9 +2,11 @@ import { test, expect, describe } from "bun:test";
 import {
   parseCallback,
   permCallbackData,
+  pickSessionField,
+  pickSessionName,
+  remapValues,
   sessionPrefix,
   truncate,
-  pickSessionName,
 } from "../src/routing.ts";
 
 describe("parseCallback", () => {
@@ -97,5 +99,49 @@ describe("pickSessionName", () => {
       { sessionId: "bbb", name: "  main  ", updatedAt: 40 },
     ];
     expect(pickSessionName(rows2, "bbb")).toBe("main");
+  });
+});
+
+describe("pickSessionField (cwd)", () => {
+  test("returns the session's cwd", () => {
+    const rows = [
+      { sessionId: "aaa", cwd: "C:\\other", updatedAt: 5 },
+      { sessionId: "bbb", cwd: "C:\\Users\\naive\\claude\\system", updatedAt: 10 },
+    ];
+    expect(pickSessionField(rows, "bbb", "cwd")).toBe(
+      "C:\\Users\\naive\\claude\\system",
+    );
+  });
+
+  test("returns empty when the record has no cwd", () => {
+    expect(pickSessionField([{ sessionId: "bbb", name: "x" }], "bbb", "cwd")).toBe("");
+  });
+
+  test("a fresher record without the field does not shadow an older one with it", () => {
+    const rows = [
+      { sessionId: "bbb", cwd: "C:\\repo", updatedAt: 1 },
+      { sessionId: "bbb", name: "renamed", updatedAt: 99 },
+    ];
+    expect(pickSessionField(rows, "bbb", "cwd")).toBe("C:\\repo");
+  });
+});
+
+describe("remapValues", () => {
+  test("rewrites every value equal to `from`", () => {
+    const m = new Map<number, string>([
+      [1, "old"],
+      [2, "other"],
+      [3, "old"],
+    ]);
+    remapValues(m, "old", "new");
+    expect(m.get(1)).toBe("new");
+    expect(m.get(2)).toBe("other");
+    expect(m.get(3)).toBe("new");
+  });
+
+  test("leaves the map untouched when nothing matches", () => {
+    const m = new Map<number, string>([[1, "a"]]);
+    remapValues(m, "zzz", "new");
+    expect(m.get(1)).toBe("a");
   });
 });

@@ -8,6 +8,7 @@ import { existsSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import type { Api } from "grammy";
 import { GROUP_CHAT_ID, TOPICS_FILE } from "./config.ts";
 import { normalizePath } from "./paths.ts";
+import { log } from "./log.ts";
 
 type TopicRecord = { topicId: number; name: string; createdAt: number };
 type TopicMap = Record<string, TopicRecord>;
@@ -82,6 +83,7 @@ function createOnce(api: Api, key: string, name: string): Promise<number> {
     const topicId = await createTopic(api, name);
     map[key] = { topicId, name, createdAt: Date.now() };
     persist();
+    log("topic.created", { key, name, topicId });
     return topicId;
   })();
   inFlight.set(key, p);
@@ -103,6 +105,7 @@ export async function resolveTopic(
 /** Recreate a topic that Telegram reports as gone, updating the map. */
 export async function recreateTopic(api: Api, key: string): Promise<number> {
   const name = map[key]?.name ?? key;
+  log("topic.recreate", { key, name });
   // Drop the stale record first so createOnce always makes a fresh topic.
   delete map[key];
   return createOnce(api, key, name);

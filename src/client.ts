@@ -17,6 +17,9 @@ const BASE = `http://127.0.0.1:${CONTROL_PORT}`;
 const CALL_TIMEOUT_MS = 15_000;
 
 let sessionId: string | null = null;
+// Survives the resets that force a re-register, so the leader can migrate the
+// previous session's queue and message ownership instead of orphaning them.
+let lastSessionId: string | null = null;
 let topicId: number | null = null;
 let leaderStarted = false;
 
@@ -35,6 +38,7 @@ async function register(): Promise<void> {
       project: projectKey(),
       name: projectName(),
       label: sessionLabel(),
+      prev: lastSessionId ?? undefined,
     }),
     signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
   });
@@ -58,6 +62,7 @@ async function register(): Promise<void> {
     throw new Error("telegram-topics: register response missing sessionId");
   }
   sessionId = data.sessionId;
+  lastSessionId = sessionId;
   topicId = data.topicId ?? null;
 }
 

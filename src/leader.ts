@@ -27,9 +27,11 @@ import { resolveTopic, recreateTopic } from "./topics.ts";
 import {
   parseCallback,
   permCallbackData,
+  remapValues,
   sessionPrefix,
   truncate,
 } from "./routing.ts";
+import { log } from "./log.ts";
 
 export type Inbound =
   | { type: "message"; from: string; text: string; messageId: number; ts: number }
@@ -84,7 +86,10 @@ function wake(s: Session): void {
 
 function deliverToSession(sid: string, msg: Inbound): void {
   const s = sessions.get(sid);
-  if (!s) return;
+  if (!s) {
+    log("deliver.drop", { sid, type: msg.type });
+    return;
+  }
   s.queue.push(msg);
   wake(s);
 }
@@ -175,6 +180,7 @@ function initBot(): void {
     const owner = m.reply_to_message
       ? ownerSession(m.reply_to_message.message_id)
       : undefined;
+    log("inbound.message", { mid: m.message_id, topic: topicId, owner: owner ?? "fan" });
     if (owner) deliverToSession(owner, inbound);
     else deliver(topicId, inbound);
   });
@@ -197,9 +203,18 @@ function initBot(): void {
     }
 
     await ctx.answerCallbackQuery().catch(() => {});
-    if (!msg || !inGroup(msg.chat.id)) return;
-    if (!isAllowedUser(cb.from?.id)) return;
-    if (msg.message_thread_id === undefined) return;
+    if (!msg || !inGroup(msg.chat.id)) {
+      log("callback.drop", { reason: "chat" });
+      return;
+    }
+    if (!isAllowedUser(cb.from?.id)) {
+      log("callback.drop", { reason: "user", from: String(cb.from?.id ?? "") });
+      return;
+    }
+    if (msg.message_thread_id === undefined) {
+      log("callback.drop", { reason: "no-thread", mid: msg.message_id });
+      return;
+    }
     // A choice button's callback_data is the option index; map it back to the
     // label we sent so the session sees the human-readable choice.
     let data: string;
@@ -218,6 +233,7 @@ function initBot(): void {
     };
     // Route the tap to the session that posted the buttons; else fan to topic.
     const owner = ownerSession(msg.message_id);
+    log("inbound.callback", { mid: msg.message_id, data, owner: owner ?? "fan" });
     if (owner) deliverToSession(owner, inbound);
     else deliver(msg.message_thread_id, inbound);
   });
@@ -239,6 +255,7 @@ function initBot(): void {
     };
     // Route to the session that sent the reacted message; else fan to topic.
     const owner = ownerSession(r.message_id);
+    log("inbound.reaction", { mid: r.message_id, owner: owner ?? "fan" });
     if (owner) deliverToSession(owner, inbound);
     else deliver(topicId, inbound);
   });
@@ -496,10 +513,11 @@ async function handle(req: Request): Promise<Response> {
   }
 
   if (path === "/register" && req.method === "POST") {
-    const { project, name, label } = (await req.json()) as {
+    const { project, name, label, prev } = (await req.json()) as {
       project: string;
       name: string;
       label?: string;
+      prev?: string;
     };
     let topicId: number;
     try {
@@ -508,7 +526,7 @@ async function handle(req: Request): Promise<Response> {
       return json({ error: String(e) }, 500);
     }
     const id = randomUUID().slice(0, 8);
-    sessions.set(id, {
+    const fresh: Session = {
       id,
       project,
       topicId,
@@ -519,8 +537,23 @@ async function handle(req: Request): Promise<Response> {
       waiter: null,
       waiterTimer: null,
       lastActive: Date.now(),
-    });
+    };
+    sessions.set(id, fresh);
     bindTopic(id, topicId);
+    // The same client re-registering (it saw its previous poll fail): move the
+    // old session's undrained queue and message ownership onto the new id, so
+    // replies and button taps on already-sent messages keep routing here
+    // instead of rotting in a queue nobody polls.
+    if (prev && prev !== id) {
+      const old = sessions.get(prev);
+      if (old) {
+        fresh.queue.push(...old.queue);
+        unbindTopic(prev, old.topicId);
+        sessions.delete(prev);
+      }
+      remapValues(sentMessageSession, prev, id);
+    }
+    log("register", { sid: id, project, prev: prev ?? "", sessions: sessions.size });
     return json({ sessionId: id, topicId });
   }
 
@@ -613,7 +646,10 @@ async function handle(req: Request): Promise<Response> {
       return json({ ok: true, messageId: sentId });
     }
     if (path === "/poll") {
-      const timeout = Number(url.searchParams.get("timeout") ?? "25") * 1000;
+      // Clamped below the server's idleTimeout — a longer wait would be cut
+      // mid-poll by the socket, not resolved by the timer.
+      const timeout =
+        Math.min(Number(url.searchParams.get("timeout") ?? "25"), 30) * 1000;
       if (s.queue.length === 0) {
         await new Promise<void>((resolve) => {
           s.waiter = resolve;
@@ -634,6 +670,7 @@ async function handle(req: Request): Promise<Response> {
     if (path === "/unregister") {
       unbindTopic(s.id, s.topicId);
       sessions.delete(s.id);
+      log("unregister", { sid: s.id });
       return json({ ok: true });
     }
   } catch (e) {
@@ -656,6 +693,12 @@ export async function tryBecomeLeader(): Promise<boolean> {
       hostname: "127.0.0.1",
       port: CONTROL_PORT,
       fetch: handle,
+      // Bun's default idleTimeout is 10s, counted while a response writes no
+      // bytes — which is exactly what /poll's long-poll does for up to 30s.
+      // Without this every long-poll dies mid-wait with an empty reply; the
+      // client reads that as a dead leader and re-registers in an endless
+      // loop, orphaning its queue (and every button tap routed to it).
+      idleTimeout: 40,
     });
   } catch (e: any) {
     if (e?.code === "EADDRINUSE" || /in use|address already/i.test(String(e))) {
@@ -680,6 +723,7 @@ export async function tryBecomeLeader(): Promise<boolean> {
       // re-elect, so inbound would be dead forever. Relinquish leadership so the
       // next control request re-elects a fresh leader (this process or another).
       botRunning = false;
+      log("poller.died", { error: String(e) });
       process.stderr.write(
         `telegram-topics leader: poller died, relinquishing leadership: ${e}\n`,
       );
@@ -693,6 +737,7 @@ export async function tryBecomeLeader(): Promise<boolean> {
       if (now - s.lastActive > 3 * 3600 * 1000) {
         unbindTopic(id, s.topicId);
         sessions.delete(id);
+        log("session.reaped", { sid: id });
       }
     }
     try {
@@ -705,11 +750,13 @@ export async function tryBecomeLeader(): Promise<boolean> {
     }
   }, 300_000);
 
+  log("leader.up", { pid: process.pid, port: CONTROL_PORT });
   process.stderr.write(`telegram-topics: leader up on 127.0.0.1:${CONTROL_PORT}\n`);
   return true;
 }
 
 export function stopLeader(): void {
+  if (bunServer) log("leader.stopped", { pid: process.pid });
   try {
     bunServer?.stop();
   } catch {
