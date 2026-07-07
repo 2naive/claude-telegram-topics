@@ -21,18 +21,30 @@ import {
   GROUP_CHAT_ID,
   CONTROL_PORT,
   STATE_DIR,
+  CONFIG_DIR,
   VERSION,
 } from "./config.ts";
 import { isAllowedUser, assertSendable } from "./access.ts";
 import { resolveTopic, recreateTopic } from "./topics.ts";
+import { normalizePath } from "./paths.ts";
 import {
   isNewerVersion,
   parseCallback,
   permCallbackData,
-  remapValues,
   sessionPrefix,
   truncate,
+  LEADER_IDLE_TIMEOUT_SEC,
+  POLL_MAX_SEC,
 } from "./routing.ts";
+import {
+  flushSent,
+  loadSent,
+  remapSentSessions,
+  sessionForSentMessage,
+  takeOptions,
+  topicForSentMessage,
+  trackSent,
+} from "./sent.ts";
 import { log } from "./log.ts";
 
 export type Inbound =
@@ -223,12 +235,13 @@ function initBot(): void {
     // label we sent so the session sees the human-readable choice.
     let data: string;
     if (parsed.kind === "choice") {
-      const opts = sentMessageOptions.get(msg.message_id);
+      // takeOptions consumes the labels, so the keyboard stays consumed even
+      // across a later leader hand-off.
+      const opts = takeOptions(msg.message_id);
       data = opts?.[parsed.index] ?? String(parsed.index);
       // A tap must be visibly acknowledged: toast the choice, stamp it into the
       // message, and drop the keyboard so the buttons read as consumed. Passing
       // the original entities keeps the message's formatting intact.
-      sentMessageOptions.delete(msg.message_id);
       await ctx
         .answerCallbackQuery({ text: truncate(`✅ ${data}`, 200) })
         .catch(() => {});
@@ -280,60 +293,16 @@ function initBot(): void {
   });
 }
 
-// Reactions carry a message_id but no thread id, so we route them via a map of
-// bot-sent message -> topic. In-memory only: reaction routing for messages sent
-// before a leader hand-off is lost (a known v0.1 limitation).
-const sentMessageTopic = new Map<number, number>();
-const SENT_LIMIT = 2000;
-function trackSent(messageId: number, topicId: number): void {
-  sentMessageTopic.set(messageId, topicId);
-  if (sentMessageTopic.size > SENT_LIMIT) {
-    const drop = sentMessageTopic.size - SENT_LIMIT / 2;
-    let i = 0;
-    for (const k of sentMessageTopic.keys()) {
-      if (i++ >= drop) break;
-      sentMessageTopic.delete(k);
-    }
-  }
-}
-function topicForSentMessage(messageId: number): number | undefined {
-  return sentMessageTopic.get(messageId);
-}
+// Bot-sent message bookkeeping (topic for reaction routing, owning session for
+// reply/tap routing, button labels) lives in sent.ts — one record per message,
+// persisted so it survives leader hand-offs.
 
-// Choice labels attached to a sent message. Button callback_data is the option
-// index (bounded, avoids Telegram's 64-byte callback_data cap on long labels);
-// this maps the tapped index back to its label. Bounded like sentMessageTopic.
-const sentMessageOptions = new Map<number, string[]>();
-function trackOptions(messageId: number, options: string[]): void {
-  sentMessageOptions.set(messageId, options);
-  if (sentMessageOptions.size > SENT_LIMIT) {
-    const drop = sentMessageOptions.size - SENT_LIMIT / 2;
-    let i = 0;
-    for (const k of sentMessageOptions.keys()) {
-      if (i++ >= drop) break;
-      sentMessageOptions.delete(k);
-    }
-  }
-}
-
-// Which session sent a given message, so a reply / button tap / reaction on it
-// routes back to that specific session instead of fanning to every session on
-// the topic — the difference that matters when a project has two sessions.
-const sentMessageSession = new Map<number, string>();
-function trackSession(messageId: number, sessionId: string): void {
-  sentMessageSession.set(messageId, sessionId);
-  if (sentMessageSession.size > SENT_LIMIT) {
-    const drop = sentMessageSession.size - SENT_LIMIT / 2;
-    let i = 0;
-    for (const k of sentMessageSession.keys()) {
-      if (i++ >= drop) break;
-      sentMessageSession.delete(k);
-    }
-  }
-}
-// The live session that owns a message, if it still exists.
+// The live session that owns a message, if it still exists. After a hand-off
+// the persisted owner id is stale until that client re-registers (with prev,
+// which remaps ownership) — the sessions.has() guard degrades to topic fan-out
+// in that window instead of routing into a dead queue.
 function ownerSession(messageId: number): string | undefined {
-  const sid = sentMessageSession.get(messageId);
+  const sid = sessionForSentMessage(messageId);
   return sid && sessions.has(sid) ? sid : undefined;
 }
 
@@ -407,6 +376,7 @@ async function handlePermissionCallback(
   // allow / deny → delete first so a double-tap can't fire twice, then hand the
   // decision to the owning session.
   pendingPermissions.delete(key);
+  log("permission.decision", { sid: sessionId, behavior, requestId });
   deliverToSession(sessionId, {
     type: "permission",
     requestId,
@@ -490,9 +460,11 @@ async function sendText(s: Session, text: string, options?: string[]): Promise<n
       throw e;
     }
   });
-  trackSent(msgId, s.topicId);
-  trackSession(msgId, s.id);
-  if (options?.length) trackOptions(msgId, options);
+  trackSent(msgId, {
+    topicId: s.topicId,
+    sessionId: s.id,
+    options: options?.length ? options : undefined,
+  });
   return msgId;
 }
 
@@ -509,8 +481,7 @@ async function sendFile(s: Session, path: string, caption: string): Promise<numb
       : await bot.api.sendDocument(GROUP_CHAT_ID, new InputFile(path), opts);
     return sent.message_id;
   });
-  trackSent(msgId, s.topicId);
-  trackSession(msgId, s.id);
+  trackSent(msgId, { topicId: s.topicId, sessionId: s.id });
   return msgId;
 }
 
@@ -580,7 +551,16 @@ async function handle(req: Request): Promise<Response> {
         unbindTopic(prev, old.topicId);
         sessions.delete(prev);
       }
-      remapValues(sentMessageSession, prev, id);
+      remapSentSessions(prev, id);
+    }
+    // A registration keyed to the config dir is almost always the process.cwd()
+    // fallback (identity race), not a real project — the client self-heals by
+    // re-registering once its identity resolves, but the tell belongs in the log.
+    if (project === normalizePath(CONFIG_DIR)) {
+      log("register.configdir", { sid: id });
+      process.stderr.write(
+        "telegram-topics leader: session registered as the config dir — likely a fallback identity; it should re-register itself shortly\n",
+      );
     }
     log("register", { sid: id, project, prev: prev ?? "", sessions: sessions.size });
     return json({ sessionId: id, topicId });
@@ -637,6 +617,9 @@ async function handle(req: Request): Promise<Response> {
       const description = String(body.description ?? "");
       const inputPreview = String(body.inputPreview ?? "");
       const preview = inputPreview ? `\n\n${truncate(inputPreview, 350)}` : "";
+      // Every relay attempt is logged: "did the permission_request ever reach
+      // the leader" was undiagnosable without this during a live incident.
+      log("permission.ask", { sid: s.id, tool: toolName, requestId });
       let sentId: number;
       try {
         const sent = await bot.api.sendMessage(
@@ -678,7 +661,7 @@ async function handle(req: Request): Promise<Response> {
       // Clamped below the server's idleTimeout — a longer wait would be cut
       // mid-poll by the socket, not resolved by the timer.
       const timeout =
-        Math.min(Number(url.searchParams.get("timeout") ?? "25"), 30) * 1000;
+        Math.min(Number(url.searchParams.get("timeout") ?? "25"), POLL_MAX_SEC) * 1000;
       if (s.queue.length === 0) {
         await new Promise<void>((resolve) => {
           s.waiter = resolve;
@@ -708,7 +691,7 @@ async function handle(req: Request): Promise<Response> {
   return json({ error: "not found" }, 404);
 }
 
-let bunServer: { stop: () => void } | null = null;
+let bunServer: { stop: (closeActiveConnections?: boolean) => void } | null = null;
 let reaperTimer: ReturnType<typeof setInterval> | null = null;
 let steppingDown = false;
 
@@ -751,7 +734,7 @@ export async function tryBecomeLeader(): Promise<boolean> {
       // Without this every long-poll dies mid-wait with an empty reply; the
       // client reads that as a dead leader and re-registers in an endless
       // loop, orphaning its queue (and every button tap routed to it).
-      idleTimeout: 40,
+      idleTimeout: LEADER_IDLE_TIMEOUT_SEC,
     });
   } catch (e: any) {
     if (e?.code === "EADDRINUSE" || /in use|address already/i.test(String(e))) {
@@ -759,6 +742,11 @@ export async function tryBecomeLeader(): Promise<boolean> {
     }
     throw e;
   }
+
+  // Synchronous, same tick as winning the port and before the bot starts: no
+  // control request or Telegram update can ever observe an empty store, and
+  // the previous leader flushed before releasing the port.
+  loadSent();
 
   // We own the port -> own the bot. Do NOT drop pending updates: across a
   // leadership hand-off we still want to deliver messages the user sent while
@@ -810,9 +798,35 @@ export async function tryBecomeLeader(): Promise<boolean> {
 }
 
 export function stopLeader(): void {
-  if (bunServer) log("leader.stopped", { pid: process.pid });
+  if (bunServer) {
+    log("leader.stopped", { pid: process.pid });
+    // The successor can only bind after we release the port — flush first so
+    // it always loads the final routing state.
+    flushSent();
+  }
   try {
-    bunServer?.stop();
+    // Two-phase close. Graceful first: the listener closes immediately (port
+    // frees for re-election) while in-flight requests complete — force-closing
+    // here would sever an in-flight /send AFTER its Telegram call was issued,
+    // and the client's retry against the new leader posts the message twice.
+    // But graceful alone is a trap (reproduced live on Bun 1.3.12): pooled
+    // keep-alive connections keep being served by THIS demoted process even
+    // after a new leader binds the port — followers' back-to-back long-polls
+    // never idle out, so they'd ride the dead leader forever, an error-free
+    // inbound black hole. The delayed force-close severs those stragglers;
+    // their clients then re-elect and re-register (the designed recovery).
+    const server = bunServer;
+    server?.stop();
+    if (server) {
+      const t = setTimeout(() => {
+        try {
+          server.stop(true);
+        } catch {
+          // already fully closed
+        }
+      }, 3000);
+      (t as { unref?: () => void }).unref?.();
+    }
   } catch {
     // already stopped
   }

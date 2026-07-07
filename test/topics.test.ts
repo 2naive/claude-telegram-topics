@@ -5,13 +5,18 @@ import { join } from "node:path";
 
 // Point state at a throwaway dir BEFORE importing topics.ts — config.ts reads
 // TG_TOPICS_STATE_DIR at import time, and a dynamic import defers that to here.
-const dir = mkdtempSync(join(tmpdir(), "tgtopics-"));
-process.env.TG_TOPICS_STATE_DIR = dir;
-process.env.TELEGRAM_GROUP_CHAT_ID = "-100999";
+// ||= because bun test shares the module cache across test files: another file
+// may have already imported config.ts, and its STATE_DIR then wins — so the
+// seed below is written to the path config ACTUALLY uses, not to our guess.
+process.env.TG_TOPICS_STATE_DIR ||= mkdtempSync(join(tmpdir(), "tgtopics-"));
+process.env.TELEGRAM_GROUP_CHAT_ID ||= "-100999";
 
-// Seed a legacy topics.json with an un-normalized key to exercise migration.
+const { TOPICS_FILE } = await import("../src/config.ts");
+
+// Seed a legacy topics.json with an un-normalized key to exercise migration —
+// before topics.ts is imported, which is when the file is read.
 writeFileSync(
-  join(dir, "topics.json"),
+  TOPICS_FILE,
   JSON.stringify({
     "C:\\Users\\Me\\Legacy": { topicId: 42, name: "Legacy", createdAt: 1 },
   }),

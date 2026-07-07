@@ -16,12 +16,13 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import {
   ListToolsRequestSchema,
   CallToolRequestSchema,
+  EmptyResultSchema,
   type Request,
   type Result,
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { existsSync } from "node:fs";
-import { assertConfigured } from "./config.ts";
+import { assertConfigured, VERSION } from "./config.ts";
 import { assertSendable } from "./access.ts";
 import { stopLeader } from "./leader.ts";
 import * as channel from "./client.ts";
@@ -61,7 +62,7 @@ const INSTRUCTIONS = [
 ].join("\n");
 
 const mcp = new Server<Request, ChannelNotification, Result>(
-  { name: "telegram-topics", version: "0.1.0" },
+  { name: "telegram-topics", version: VERSION },
   {
     capabilities: {
       tools: {},
@@ -108,6 +109,13 @@ mcp.setNotificationHandler(
     }
   },
 );
+
+// Diagnostic: surface any notification Claude Code sends that we have no
+// handler for. "Does CC emit permission_request at all, and under what method"
+// was unanswerable during a live incident; with this, `claude --debug` shows it.
+mcp.fallbackNotificationHandler = async (n: { method: string }) => {
+  process.stderr.write(`telegram-topics: unhandled notification ${n.method}\n`);
+};
 
 // --- Inbound: push this project's topic messages into the session ---
 
@@ -265,15 +273,66 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 });
 
 // --- Lifecycle ---
+//
+// An orphaned server is not a cosmetic leak: if it happens to be the leader it
+// keeps the bot poller and the control port hostage, silently black-holing the
+// whole bridge (live incident: /reload-plugins respawned the server and the old
+// one survived, still leading). StdioServerTransport only subscribes to stdin
+// 'data'/'error' — pipe EOF fires 'end'/'close', which NOBODY listened to, so
+// "teardown on stdin close" never actually worked. Every exit signal below is
+// therefore wired explicitly; shutdown is idempotent because several of them
+// can fire together.
 
-function shutdown(): void {
+let shuttingDown = false;
+function shutdown(reason: string): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  process.stderr.write(`telegram-topics: shutting down (${reason})\n`);
   inboundRunning = false;
   try {
     stopLeader();
   } catch {
     // best-effort
   }
-  process.exit(0);
+  // Grace lets grammy's bot.stop() abort its getUpdates (so the next leader's
+  // first poll doesn't 409) and stderr flush. Hard deadline: a wedged stop
+  // must never keep an orphan alive — that is the failure this code prevents.
+  setTimeout(() => process.exit(0), 500);
+}
+
+// Last-resort orphan detection. Layers 1–3 all depend on SOME event reaching
+// us — but on Windows the pipe write-end can be inherited by a respawned
+// sibling, so an abandoned server may never see EOF at all (live incident:
+// /reload-plugins left the old leader running, holding the bot and the port).
+let pingArmed = false;
+let pingStrikes = 0;
+function startWatchdog(): void {
+  const ppid = process.ppid;
+  const t = setInterval(async () => {
+    // The wrapper (our parent) dying means we are orphaned by definition.
+    // Only ESRCH is death — EPERM and friends mean "alive".
+    try {
+      process.kill(ppid, 0);
+    } catch (e) {
+      if ((e as { code?: string }).code === "ESRCH") {
+        return shutdown("parent process gone");
+      }
+    }
+    // Protocol-level truth: a client that dropped this transport stops
+    // answering ping. Armed only after the first success, so a client that
+    // never implements ping cannot get a healthy session killed. Each ping
+    // also writes to stdout, flushing latent EPIPE into the stdout handler.
+    try {
+      await mcp.request({ method: "ping" }, EmptyResultSchema, { timeout: 10_000 });
+      pingArmed = true;
+      pingStrikes = 0;
+    } catch {
+      if (pingArmed && ++pingStrikes >= 2) {
+        shutdown("client stopped answering ping");
+      }
+    }
+  }, 30_000);
+  (t as { unref?: () => void }).unref?.();
 }
 
 async function main() {
@@ -284,15 +343,29 @@ async function main() {
     process.exit(1);
   }
 
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  // POSIX only in practice: Windows has no SIGTERM, and /reload-plugins kills
+  // via TerminateProcess (no signal) — the layers below carry teardown there.
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGHUP", () => shutdown("SIGHUP"));
+
+  // Claude Code closed our stdin (session ended or the plugin was reloaded and
+  // this process replaced) — the transport won't tell us, so listen ourselves.
+  process.stdin.on("end", () => shutdown("stdin end"));
+  process.stdin.on("close", () => shutdown("stdin close"));
+  // Claude Code stopped reading our stdout (EPIPE on the next push). Without
+  // this an orphan discovers nothing until it happens to write.
+  process.stdout.on("error", () => shutdown("stdout error"));
 
   const transport = new StdioServerTransport();
-  // When Claude Code closes the stdio pipe (session ends), relinquish
-  // leadership so the bot poller and control port are freed for re-election.
-  transport.onclose = shutdown;
+  // Backup path: the SDK chains this handler before its own on transport close.
+  transport.onclose = () => shutdown("transport closed");
 
   await mcp.connect(transport);
+  // Authoritative SDK signal: fires when the protocol connection is torn down.
+  mcp.onclose = () => shutdown("mcp connection closed");
+
+  startWatchdog();
 
   // Stream inbound from the moment the channel is up.
   void runInboundLoop().catch((e) =>

@@ -7,7 +7,13 @@
 // disk, so the same project lands back in the same topic).
 
 import { CONTROL_PORT, VERSION } from "./config.ts";
-import { projectKey, projectName, sessionLabel } from "./project.ts";
+import {
+  identityResolved,
+  projectKey,
+  projectName,
+  sessionLabel,
+  waitForIdentity,
+} from "./project.ts";
 import { tryBecomeLeader } from "./leader.ts";
 import type { Inbound } from "./leader.ts";
 
@@ -30,12 +36,30 @@ async function ensureLeaderExists(): Promise<void> {
   leaderStarted = true;
 }
 
+// The startup identity wait runs at most once per process: re-registrations
+// (leader death, 404, hand-off) must not re-pay the timeout in environments
+// where identity never resolves.
+let identityWaited = false;
+
 async function register(honorHandoff = true): Promise<void> {
+  // Give the session record a bounded chance to appear before the FIRST
+  // registration — registering the provisional process.cwd() identity would
+  // create a garbage topic named after the config dir (live incident after
+  // /reload-plugins). If it still hasn't resolved we register anyway (the
+  // channel must not stay dead) and the heal loop below fixes it up later.
+  if (!identityResolved() && !identityWaited) {
+    identityWaited = true;
+    await waitForIdentity();
+  }
+  // Snapshot the key BEFORE the round-trip: identity can resolve during the
+  // awaits below, and registeredKey must reflect what the leader was actually
+  // told, or the heal comparison would silently pass on a mismatch.
+  const key = projectKey();
   const resp = await fetch(`${BASE}/register`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      project: projectKey(),
+      project: key,
       name: projectName(),
       label: sessionLabel(),
       prev: lastSessionId ?? undefined,
@@ -82,12 +106,71 @@ async function register(honorHandoff = true): Promise<void> {
   sessionId = data.sessionId;
   lastSessionId = sessionId;
   topicId = data.topicId ?? null;
+  registeredKey = key;
+  // Provisional identity — or one that resolved to something else while the
+  // request was in flight — arms the self-heal.
+  if (!identityResolved() || key !== projectKey()) startHealLoop();
 }
+
+// Self-heal for a provisional registration: once the real project key is known
+// and differs from the one the leader was told, drop the session and
+// re-register — the leader's prev-migration moves the queue and message
+// ownership, and the session lands in its real topic. The loop only disarms
+// after VERIFYING the registered key matches (or on the give-up cap): clearing
+// it optimistically while a re-registration is in flight would strand the
+// session under the stale key forever.
+let registeredKey: string | null = null;
+let healTimer: ReturnType<typeof setInterval> | null = null;
+let healTicks = 0;
+const HEAL_TICK_MS = 15_000;
+const HEAL_MAX_TICKS = 40; // ~10 min: identity is never coming — stop burning cycles
+
+function stopHealLoop(): void {
+  if (healTimer) {
+    clearInterval(healTimer);
+    healTimer = null;
+  }
+}
+
+function startHealLoop(): void {
+  if (healTimer) return;
+  healTicks = 0;
+  healTimer = setInterval(() => {
+    projectKey(); // recompute — caches as soon as the record answers
+    if (!identityResolved()) {
+      if (++healTicks >= HEAL_MAX_TICKS) stopHealLoop();
+      return;
+    }
+    if (projectKey() === registeredKey && sessionId) {
+      stopHealLoop(); // verified: leader holds the real key (or a legit match)
+      return;
+    }
+    // Not registered right now: either a re-registration is in flight
+    // (single-flight returns that promise) or the last attempt failed — in
+    // both cases ensureRegistered() is the correct move, and the next tick
+    // verifies the outcome. Only drop a LIVE session registered on a stale key.
+    if (sessionId) sessionId = null; // lastSessionId keeps the id for prev-migration
+    void ensureRegistered().catch(() => {
+      // leader mid-election or busy — the loop stays armed and retries.
+    });
+  }, HEAL_TICK_MS);
+  (healTimer as { unref?: () => void }).unref?.();
+}
+
+// Single-flight: the background inbound loop and a first tool call can race
+// here; two concurrent registrations would strand one session id.
+let registering: Promise<void> | null = null;
 
 export async function ensureRegistered(): Promise<void> {
   if (sessionId) return;
-  if (!leaderStarted) await ensureLeaderExists();
-  await register();
+  if (registering) return registering;
+  registering = (async () => {
+    if (!leaderStarted) await ensureLeaderExists();
+    await register();
+  })().finally(() => {
+    registering = null;
+  });
+  return registering;
 }
 
 async function call(

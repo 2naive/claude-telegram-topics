@@ -9,28 +9,35 @@
 // own folder name, in its original case.
 
 import { spawnSync } from "node:child_process";
-import { homedir } from "node:os";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { normalizePath, displayName } from "./paths.ts";
 import { pickSessionField, type SessionRecord } from "./routing.ts";
-import { SESSION_NAME_OVERRIDE } from "./config.ts";
+import { CONFIG_DIR, SESSION_NAME_OVERRIDE } from "./config.ts";
+import { pidCandidates } from "./pids.ts";
 
 // --- Claude Code session records (<config>/sessions/<pid>.json) ---
 //
 // Claude Code spawns plugin MCP servers with cwd = its CONFIG dir (~/.claude),
 // NOT the session's working directory — so process.cwd() here would collapse
 // every project on the machine into one "~/.claude" topic. The session's real
-// cwd — like its /rename name — lives only in the per-pid session record,
-// matched via the CLAUDE_CODE_SESSION_ID env var.
-
-function configDir(): string {
-  return process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
-}
+// cwd — like its /rename name — lives only in the per-pid session record.
+//
+// Identity ladder, ordered by trust:
+//  1. sessions/<claude pid>.json via the parent chain (record files are NAMED
+//     by the claude process pid — this server's grandparent, or parent on a
+//     direct spawn). Works even when CLAUDE_CODE_SESSION_ID is missing, which
+//     is exactly the /reload-plugins respawn case that once registered a
+//     garbage "~/.claude" project. The env id, when present, must CONFIRM the
+//     record (a mismatch means pid reuse / a stale file).
+//  2. Scan all records matched by CLAUDE_CODE_SESSION_ID (legacy path, covers
+//     a failed parent-chain query).
+//  3. process.cwd() — provisional, NEVER cached: a record can start answering
+//     at any time, and every recomputation is a self-heal opportunity.
 
 function readSessionRecords(): SessionRecord[] {
   let files: string[];
-  const dir = join(configDir(), "sessions");
+  const dir = join(CONFIG_DIR, "sessions");
   try {
     files = readdirSync(dir);
   } catch {
@@ -48,27 +55,99 @@ function readSessionRecords(): SessionRecord[] {
   return entries;
 }
 
+function readSessionRecordFor(pid: number): SessionRecord | null {
+  try {
+    const rec: unknown = JSON.parse(
+      readFileSync(join(CONFIG_DIR, "sessions", `${pid}.json`), "utf8"),
+    );
+    return rec && typeof rec === "object" ? (rec as SessionRecord) : null;
+  } catch {
+    return null;
+  }
+}
+
+function pidRecord(): SessionRecord | null {
+  const cands = pidCandidates();
+  if (!cands) return null; // platform query still warming — recheck next tick
+  const envId = process.env.CLAUDE_CODE_SESSION_ID || "";
+  for (const c of cands) {
+    const r = readSessionRecordFor(c.pid);
+    if (!r || typeof r.cwd !== "string" || !r.cwd.trim()) continue;
+    // The env id, when present, must CONFIRM the record.
+    if (envId && r.sessionId && r.sessionId !== envId) continue;
+    // Pid-reuse guard: a record last written BEFORE this pid's process even
+    // started belongs to a previous (dead) owner of the pid number.
+    if (
+      c.startedAt !== null &&
+      typeof r.updatedAt === "number" &&
+      r.updatedAt < c.startedAt - 60_000
+    ) {
+      continue;
+    }
+    return r;
+  }
+  return null;
+}
+
 function sessionField(field: "name" | "cwd"): string {
+  const fromPid = pidRecord()?.[field];
+  if (typeof fromPid === "string" && fromPid.trim()) return fromPid.trim();
   const id = process.env.CLAUDE_CODE_SESSION_ID;
   if (!id) return "";
   return pickSessionField(readSessionRecords(), id, field);
 }
 
-// The session cwd is cached only once the store yields it: at server startup
+// The session cwd is cached only once a record yields it: at server startup
 // the record may not be written yet, and caching the process.cwd() fallback
 // then would freeze the wrong identity for the whole session. Re-registration
-// (and every send) recomputes until the store answers.
+// (and every send) recomputes until a record answers.
+//
+// One terminal exception: no CLAUDE_CODE_SESSION_ID AND no sessions dir at all
+// (ancient Claude Code / relocated config) — no identity source can ever
+// answer, so the fallback is final. Without this, such environments would pay
+// the registration wait and run the heal loop forever for nothing. The branch
+// arms only after a grace window: on a fresh install the sessions dir is
+// created lazily moments after the MCP server spawns, and terminal-caching on
+// the very first call would freeze the config-dir identity with the heal
+// machinery disarmed — the exact incident this ladder exists to prevent.
+const IDENTITY_TERMINAL_AFTER = Date.now() + 10_000;
 let cachedCwd: string | null = null;
 function baseCwd(): string {
   if (cachedCwd) return cachedCwd;
-  if (!process.env.CLAUDE_CODE_SESSION_ID) {
-    // No session id — no record will ever appear; the fallback is final.
+  const fromStore = sessionField("cwd");
+  if (fromStore) {
+    cachedCwd = fromStore;
+    return fromStore;
+  }
+  if (
+    !process.env.CLAUDE_CODE_SESSION_ID &&
+    Date.now() >= IDENTITY_TERMINAL_AFTER &&
+    !existsSync(join(CONFIG_DIR, "sessions"))
+  ) {
     cachedCwd = process.cwd();
     return cachedCwd;
   }
-  const fromStore = sessionField("cwd");
-  if (fromStore) cachedCwd = fromStore;
-  return fromStore || process.cwd();
+  return process.cwd();
+}
+
+/** True once identity is record-backed (not the provisional cwd fallback). */
+export function identityResolved(): boolean {
+  return cachedCwd !== null;
+}
+
+/**
+ * Bounded startup wait: give the session record a chance to appear before the
+ * first registration, so a fresh (or reloaded) server doesn't register a
+ * provisional identity it would immediately have to heal.
+ */
+export async function waitForIdentity(timeoutMs = 5000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    baseCwd(); // recompute — caches as soon as a record answers
+    if (identityResolved()) return true;
+    if (Date.now() >= deadline) return false;
+    await new Promise((r) => setTimeout(r, 400));
+  }
 }
 
 let cachedRoot: string | null = null;

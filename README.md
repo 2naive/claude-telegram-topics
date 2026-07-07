@@ -199,6 +199,13 @@ older** still requires the old ritual once: close **all** running channel
 sessions (or kill the leader process), then relaunch — the first new session
 takes leadership on the new code.
 
+**Restart the session — don't `/reload-plugins`.** Reloading plugins inside a
+live session respawns this server in place: the replacement may briefly miss
+its session record (0.7.0 rides that out by waiting, then self-healing its
+registration), and the abandoned process must notice on its own that it was
+dropped (0.7.0 adds watchdog teardown for exactly this). Both recover, but a
+plain session restart is the clean path.
+
 To check who is leading: `curl 127.0.0.1:8787/health` reports the session
 count, leader version, and pid (0.6.0+), and the leader writes a diagnostic
 log to `~/.claude/channels/telegram-topics/leader.log` (JSONL, 1 MB rotation) —
@@ -222,14 +229,17 @@ itself a tell.
 
 ## Limitations
 
-- Leader-held routing state is in-memory: across a leader hand-off, reaction
-  routing for previously-sent messages and any not-yet-answered permission
-  prompt are lost, and there is a brief window before a follower re-elects.
+- Per-message routing state (reaction topics, reply ownership, button labels)
+  is persisted (`sent.json`) and survives leader hand-offs from 0.7.0 on; a
+  not-yet-answered `🔐 Permission` prompt still dies with its leader, and
+  there is a brief window before a follower re-elects.
 - One forum group per machine (all projects share it, one topic each).
-- Outbound, inbound streaming, choice buttons, and reply routing are
-  live-tested. The tool-approval relay delivers its `🔐 Permission` prompts
-  live, but the full Allow/Deny round-trip has not been exercised on a real
-  approval yet; reactions likewise await a live test.
+- Outbound, inbound streaming, choice buttons, reply routing, and reactions
+  are live-tested. The tool-approval relay is implemented to Claude Code's
+  contract (verified byte-equivalent to the official Telegram plugin's), but
+  Claude Code only sends `permission_request` when its client-side feature
+  gate for channel permissions is enabled — until then no channel receives
+  relay prompts, this plugin and the official one alike.
 
 ## Development
 

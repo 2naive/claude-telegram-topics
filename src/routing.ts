@@ -1,6 +1,14 @@
 // Pure helpers for the leader's inbound routing and callback parsing — extracted
 // from leader.ts so they can be unit-tested without a live bot or control server.
 
+// Long-poll ceiling the control API grants /poll, and the Bun.serve socket
+// idle timeout that MUST outlive it. Bun kills a response that writes no bytes
+// for idleTimeout seconds — with the 10s default every 25s long-poll died
+// mid-wait, each client re-registered in a loop, and button taps routed into
+// orphaned queues (live incident). The invariant test pins the relationship.
+export const POLL_MAX_SEC = 30;
+export const LEADER_IDLE_TIMEOUT_SEC = 40;
+
 export type Callback =
   | {
       kind: "permission";

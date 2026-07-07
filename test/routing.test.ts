@@ -171,3 +171,14 @@ describe("isNewerVersion", () => {
     expect(isNewerVersion("0.6.0", "")).toBe(true);
   });
 });
+
+describe("long-poll invariants", () => {
+  test("the server socket idle timeout outlives the longest /poll wait", async () => {
+    // Regression pin for the re-registration storm: Bun.serve cuts a response
+    // that writes nothing for idleTimeout seconds, so it must exceed the
+    // longest long-poll the control API will hold open (plus headroom for
+    // request parsing before the wait starts).
+    const { LEADER_IDLE_TIMEOUT_SEC, POLL_MAX_SEC } = await import("../src/routing.ts");
+    expect(LEADER_IDLE_TIMEOUT_SEC).toBeGreaterThanOrEqual(POLL_MAX_SEC + 5);
+  });
+});

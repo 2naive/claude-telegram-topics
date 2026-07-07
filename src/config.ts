@@ -17,8 +17,14 @@ export const STATE_DIR =
   process.env.TG_TOPICS_STATE_DIR ||
   join(homedir(), ".claude", "channels", "telegram-topics");
 
+// Claude Code's config dir — where session records (sessions/<pid>.json) live,
+// and the cwd Claude Code gives plugin MCP servers (which is why a bare
+// process.cwd() here is always suspect as a project identity).
+export const CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude");
+
 export const ENV_FILE = join(STATE_DIR, ".env");
 export const TOPICS_FILE = join(STATE_DIR, "topics.json");
+export const SENT_FILE = join(STATE_DIR, "sent.json");
 
 mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
 
