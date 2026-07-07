@@ -166,10 +166,15 @@ function initBot(): void {
     if (!isAllowedUser(cb.from?.id)) return;
     const topicId = msg.message_thread_id;
     if (topicId === undefined) return;
+    // callback_data is the option index; map it back to the label we sent so the
+    // session sees the human-readable choice, not a bare number.
+    const raw = cb.data ?? "";
+    const opts = sentMessageOptions.get(msg.message_id);
+    const data = opts && /^\d+$/.test(raw) ? (opts[Number(raw)] ?? raw) : raw;
     deliver(topicId, {
       type: "callback",
       from: cb.from?.username ?? String(cb.from?.id ?? "user"),
-      data: cb.data ?? "",
+      data,
       messageId: msg.message_id,
       ts: Date.now(),
     });
@@ -211,6 +216,22 @@ function trackSent(messageId: number, topicId: number): void {
 }
 function topicForSentMessage(messageId: number): number | undefined {
   return sentMessageTopic.get(messageId);
+}
+
+// Choice labels attached to a sent message. Button callback_data is the option
+// index (bounded, avoids Telegram's 64-byte callback_data cap on long labels);
+// this maps the tapped index back to its label. Bounded like sentMessageTopic.
+const sentMessageOptions = new Map<number, string[]>();
+function trackOptions(messageId: number, options: string[]): void {
+  sentMessageOptions.set(messageId, options);
+  if (sentMessageOptions.size > SENT_LIMIT) {
+    const drop = sentMessageOptions.size - SENT_LIMIT / 2;
+    let i = 0;
+    for (const k of sentMessageOptions.keys()) {
+      if (i++ >= drop) break;
+      sentMessageOptions.delete(k);
+    }
+  }
 }
 
 // --- Sending with topic-recovery ---
@@ -255,7 +276,7 @@ async function withRecovery<T>(
 async function sendText(s: Session, text: string, options?: string[]): Promise<number> {
   const msgId = await withRecovery(s, async (topicId) => {
     const reply_markup = options?.length
-      ? { inline_keyboard: options.map((o) => [{ text: o, callback_data: o }]) }
+      ? { inline_keyboard: options.map((o, i) => [{ text: o, callback_data: String(i) }]) }
       : undefined;
     try {
       const sent = await bot.api.sendMessage(GROUP_CHAT_ID, text, {
@@ -281,6 +302,7 @@ async function sendText(s: Session, text: string, options?: string[]): Promise<n
     }
   });
   trackSent(msgId, s.topicId);
+  if (options?.length) trackOptions(msgId, options);
   return msgId;
 }
 

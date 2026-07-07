@@ -124,10 +124,18 @@ dropped rather than added.
 
 | Tool | Purpose |
 | --- | --- |
-| `send_message(text)` | Post to this project's topic (Markdown supported). |
+| `send_message(text, options?)` | Post to this project's topic (Markdown). Pass `options` (labels) to attach tappable inline buttons — the tap returns as a `[button] <label>` message, so this doubles as a multiple-choice prompt. |
 | `send_file(path, caption?)` | Send a local file (photo or document). Refuses to send channel state. |
 | `react(message_id, emoji)` | React with one of Telegram's allowed emoji. |
 | `edit_message(message_id, text)` | Edit a message the bot sent. |
+
+**Asking a question.** Claude Code's built-in multiple-choice UI (the terminal
+quiz) is *not* bridged to channels — a Telegram-only user never sees it. To ask a
+choice question remotely, call `send_message` with `options`: each label becomes
+an inline button and the tap arrives back as `[button] <label>`. (Session-level
+controls like the Shift+Tab permission mode and `/effort` are local TUI controls
+with no remote/channel hook — set them at launch via `--permission-mode` /
+`effortLevel` in settings instead.)
 
 ## Access control
 
