@@ -58,6 +58,23 @@ check (token valid, group is a forum, bot can manage topics) so setup mistakes
 surface as clear errors instead of silent failures. Run `/telegram-topics:configure`
 with no argument any time to see status.
 
+### Finding the bot token and group id
+
+- **Bot token** — create one with [@BotFather](https://t.me/BotFather) (`/newbot`).
+  If you already run the official Telegram plugin, its token lives in
+  `~/.claude/channels/telegram/.env` (`TELEGRAM_BOT_TOKEN`) — but use a
+  **dedicated** bot here: two pollers on one token cause a persistent `409
+  Conflict`, so never reuse a token another integration is polling live.
+- **Group id** — the bot must be a member of the group, and you must enable
+  **Topics** first (that turns the group into a supergroup and finalizes its id).
+  Then either add a helper bot such as [@getidsbot](https://t.me/getidsbot) or
+  `@RawDataBot` to the group, or send a message in it and read the id back from
+  the Bot API:
+  ```
+  curl "https://api.telegram.org/bot<token>/getUpdates"
+  ```
+  Use the `message.chat.id` value — a forum supergroup id starts with `-100`.
+
 ## Enable the channel
 
 The channel is not active until you launch a session with it:
