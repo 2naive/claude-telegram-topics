@@ -105,3 +105,22 @@ export function remapValues<K, V>(map: Map<K, V>, from: V, to: V): void {
     if (v === from) map.set(k, to);
   }
 }
+
+/**
+ * True when semver `a` is strictly newer than `b`. Non-numeric or missing
+ * segments count as 0, so an absent client version ("") can never outrank a
+ * real one. Drives the leader hand-off: strictness means equal versions never
+ * trade leadership back and forth.
+ */
+export function isNewerVersion(a: string, b: string): boolean {
+  const parse = (v: string): number[] =>
+    v.split(".").map((n) => parseInt(n, 10) || 0);
+  const pa = parse(a);
+  const pb = parse(b);
+  for (let i = 0; i < 3; i++) {
+    const x = pa[i] ?? 0;
+    const y = pb[i] ?? 0;
+    if (x !== y) return x > y;
+  }
+  return false;
+}

@@ -1,5 +1,6 @@
 import { test, expect, describe } from "bun:test";
 import {
+  isNewerVersion,
   parseCallback,
   permCallbackData,
   pickSessionField,
@@ -143,5 +144,30 @@ describe("remapValues", () => {
     const m = new Map<number, string>([[1, "a"]]);
     remapValues(m, "zzz", "new");
     expect(m.get(1)).toBe("a");
+  });
+});
+
+describe("isNewerVersion", () => {
+  test("compares each semver segment numerically", () => {
+    expect(isNewerVersion("0.6.0", "0.5.2")).toBe(true);
+    expect(isNewerVersion("0.5.2", "0.6.0")).toBe(false);
+    expect(isNewerVersion("1.0.0", "0.99.99")).toBe(true);
+    expect(isNewerVersion("0.5.10", "0.5.9")).toBe(true);
+  });
+
+  test("equal versions never trade leadership", () => {
+    expect(isNewerVersion("0.6.0", "0.6.0")).toBe(false);
+  });
+
+  test("missing segments count as zero", () => {
+    expect(isNewerVersion("0.6", "0.5.9")).toBe(true);
+    expect(isNewerVersion("0.6", "0.6.0")).toBe(false);
+    expect(isNewerVersion("0.6.1", "0.6")).toBe(true);
+  });
+
+  test("an absent or garbage client version never outranks a real one", () => {
+    expect(isNewerVersion("", "0.6.0")).toBe(false);
+    expect(isNewerVersion("dev", "0.6.0")).toBe(false);
+    expect(isNewerVersion("0.6.0", "")).toBe(true);
   });
 });

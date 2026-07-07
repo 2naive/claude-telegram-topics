@@ -21,10 +21,12 @@ import {
   GROUP_CHAT_ID,
   CONTROL_PORT,
   STATE_DIR,
+  VERSION,
 } from "./config.ts";
 import { isAllowedUser, assertSendable } from "./access.ts";
 import { resolveTopic, recreateTopic } from "./topics.ts";
 import {
+  isNewerVersion,
   parseCallback,
   permCallbackData,
   remapValues,
@@ -526,16 +528,26 @@ async function handle(req: Request): Promise<Response> {
   const path = url.pathname;
 
   if (path === "/health") {
-    return json({ ok: true, sessions: sessions.size });
+    return json({ ok: true, sessions: sessions.size, version: VERSION, pid: process.pid });
   }
 
   if (path === "/register" && req.method === "POST") {
-    const { project, name, label, prev } = (await req.json()) as {
+    const { project, name, label, prev, version } = (await req.json()) as {
       project: string;
       name: string;
       label?: string;
       prev?: string;
+      version?: string;
     };
+    // Version handshake: a session running newer code must lead, or every
+    // plugin update silently keeps the old leader's bugs alive until the user
+    // hunts down and kills the process. Step down and tell the caller to take
+    // over — checked before any registration so no state is built on a leader
+    // that is about to die.
+    if (isNewerVersion(String(version ?? ""), VERSION)) {
+      scheduleStepDown(String(version));
+      return json({ handoff: true, version: VERSION });
+    }
     let topicId: number;
     try {
       topicId = await resolveTopic(bot.api, project, name);
@@ -698,6 +710,30 @@ async function handle(req: Request): Promise<Response> {
 
 let bunServer: { stop: () => void } | null = null;
 let reaperTimer: ReturnType<typeof setInterval> | null = null;
+let steppingDown = false;
+
+/**
+ * Graceful step-down for the version hand-off: a newer session announced
+ * itself, so this leader retires and lets it take the port. The short delay
+ * lets the handoff response flush; the bot stops BEFORE the port is released,
+ * or the new leader's first getUpdates would hit a 409 against our still-open
+ * poll and immediately relinquish the leadership it just won.
+ */
+function scheduleStepDown(newerVersion: string): void {
+  if (steppingDown) return;
+  steppingDown = true;
+  log("leader.handoff", { version: VERSION, newer: newerVersion });
+  process.stderr.write(
+    `telegram-topics leader: newer session v${newerVersion} > v${VERSION}, stepping down\n`,
+  );
+  setTimeout(async () => {
+    if (botRunning) {
+      botRunning = false;
+      await bot.stop().catch(() => {});
+    }
+    stopLeader();
+  }, 250);
+}
 
 /**
  * Try to become the leader by binding the control port. Returns true if this
@@ -767,7 +803,8 @@ export async function tryBecomeLeader(): Promise<boolean> {
     }
   }, 300_000);
 
-  log("leader.up", { pid: process.pid, port: CONTROL_PORT });
+  steppingDown = false;
+  log("leader.up", { pid: process.pid, port: CONTROL_PORT, version: VERSION });
   process.stderr.write(`telegram-topics: leader up on 127.0.0.1:${CONTROL_PORT}\n`);
   return true;
 }

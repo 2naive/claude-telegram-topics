@@ -7,6 +7,11 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import pkg from "../package.json";
+
+// Single source of truth for the running code's version (package.json). Drives
+// the leader hand-off: a session running newer code takes leadership over.
+export const VERSION: string = pkg.version;
 
 export const STATE_DIR =
   process.env.TG_TOPICS_STATE_DIR ||

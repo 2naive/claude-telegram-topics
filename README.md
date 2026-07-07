@@ -186,16 +186,25 @@ membership is the boundary). To restrict to specific users:
 
 A plugin update only takes effect in **new** sessions — and the **leader** (the
 process that owns the bot poller) may be an old session still running the
-previous version. Followers defer to whoever holds the control port, so every
-session keeps the old leader's behavior until that process exits. After
-updating, close **all** running channel sessions (or kill the leader process),
-then relaunch — the first new session takes leadership on the new code.
+previous version.
+
+From **0.6.0** this resolves itself: sessions announce their version when they
+register, and a leader that hears from a strictly newer session gracefully
+steps down (bot poller first, then the port) while the newer session claims
+leadership. Update the plugin, start one new session, and the fleet is on the
+new code — no manual process hunting.
+
+The hand-off needs both sides to speak it, so upgrading **from 0.5.x or
+older** still requires the old ritual once: close **all** running channel
+sessions (or kill the leader process), then relaunch — the first new session
+takes leadership on the new code.
 
 To check who is leading: `curl 127.0.0.1:8787/health` reports the session
-count, and the leader writes a diagnostic log to
-`~/.claude/channels/telegram-topics/leader.log` (JSONL, 1 MB rotation) —
-lifecycle, registrations, routing decisions, and drop reasons. A leader running
-a version older than 0.5.1 writes no log at all, which is itself a tell.
+count, leader version, and pid (0.6.0+), and the leader writes a diagnostic
+log to `~/.claude/channels/telegram-topics/leader.log` (JSONL, 1 MB rotation) —
+lifecycle, registrations, hand-offs, routing decisions, and drop reasons. A
+leader running a version older than 0.5.1 writes no log at all, which is
+itself a tell.
 
 ## Security notes
 

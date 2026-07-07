@@ -6,7 +6,7 @@
 // request transparently re-elects and re-registers (the topic is persisted on
 // disk, so the same project lands back in the same topic).
 
-import { CONTROL_PORT } from "./config.ts";
+import { CONTROL_PORT, VERSION } from "./config.ts";
 import { projectKey, projectName, sessionLabel } from "./project.ts";
 import { tryBecomeLeader } from "./leader.ts";
 import type { Inbound } from "./leader.ts";
@@ -30,7 +30,7 @@ async function ensureLeaderExists(): Promise<void> {
   leaderStarted = true;
 }
 
-async function register(): Promise<void> {
+async function register(honorHandoff = true): Promise<void> {
   const resp = await fetch(`${BASE}/register`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -39,6 +39,7 @@ async function register(): Promise<void> {
       name: projectName(),
       label: sessionLabel(),
       prev: lastSessionId ?? undefined,
+      version: VERSION,
     }),
     signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
   });
@@ -57,7 +58,24 @@ async function register(): Promise<void> {
     }
     throw new Error(`telegram-topics: registration failed: ${detail}`);
   }
-  const data = (await resp.json()) as { sessionId?: string; topicId?: number };
+  const data = (await resp.json()) as {
+    sessionId?: string;
+    topicId?: number;
+    handoff?: boolean;
+  };
+  if (data.handoff && honorHandoff) {
+    // Version hand-off: the leader runs older code and is stepping down for
+    // us. Bind-loop hard — the port frees in ~250ms and we must claim it
+    // before followers stuck in long-polls against the dying leader (up to
+    // ~30s away) notice and race us. Losing is still safe: whoever won is
+    // either newer code, or will hand off to us on the register below.
+    for (let i = 0; i < 100; i++) {
+      if (await tryBecomeLeader()) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    leaderStarted = true;
+    return register(false);
+  }
   if (!data.sessionId) {
     throw new Error("telegram-topics: register response missing sessionId");
   }
