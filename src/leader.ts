@@ -202,16 +202,18 @@ function initBot(): void {
       return;
     }
 
-    await ctx.answerCallbackQuery().catch(() => {});
     if (!msg || !inGroup(msg.chat.id)) {
+      await ctx.answerCallbackQuery().catch(() => {});
       log("callback.drop", { reason: "chat" });
       return;
     }
     if (!isAllowedUser(cb.from?.id)) {
+      await ctx.answerCallbackQuery().catch(() => {});
       log("callback.drop", { reason: "user", from: String(cb.from?.id ?? "") });
       return;
     }
     if (msg.message_thread_id === undefined) {
+      await ctx.answerCallbackQuery().catch(() => {});
       log("callback.drop", { reason: "no-thread", mid: msg.message_id });
       return;
     }
@@ -221,8 +223,23 @@ function initBot(): void {
     if (parsed.kind === "choice") {
       const opts = sentMessageOptions.get(msg.message_id);
       data = opts?.[parsed.index] ?? String(parsed.index);
+      // A tap must be visibly acknowledged: toast the choice, stamp it into the
+      // message, and drop the keyboard so the buttons read as consumed. Passing
+      // the original entities keeps the message's formatting intact.
+      sentMessageOptions.delete(msg.message_id);
+      await ctx
+        .answerCallbackQuery({ text: truncate(`✅ ${data}`, 200) })
+        .catch(() => {});
+      if ("text" in msg && msg.text) {
+        await ctx
+          .editMessageText(`${msg.text}\n\n➡️ ${data}`, { entities: msg.entities })
+          .catch(() => ctx.editMessageReplyMarkup(undefined).catch(() => {}));
+      } else {
+        await ctx.editMessageReplyMarkup(undefined).catch(() => {});
+      }
     } else {
       data = parsed.data;
+      await ctx.answerCallbackQuery().catch(() => {});
     }
     const inbound: Inbound = {
       type: "callback",
