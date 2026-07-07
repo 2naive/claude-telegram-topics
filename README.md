@@ -169,7 +169,8 @@ the session. This is the remote stand-in for reaching over to the terminal.
   them apart, and a later `/rename` is reflected within seconds. Replying to a
   message — or tapping its buttons, or reacting to it — routes back to the exact
   session that sent it; a fresh message with no reply target is delivered to
-  every session on the topic.
+  every session on the topic — and **every one of them will act on it and
+  reply**. To address a single session, reply to one of its messages.
 
 ## Access control
 
@@ -180,6 +181,21 @@ membership is the boundary). To restrict to specific users:
 /telegram-topics:access allow <numeric-user-id>
 /telegram-topics:access            # show the current allowlist
 ```
+
+## Upgrading
+
+A plugin update only takes effect in **new** sessions — and the **leader** (the
+process that owns the bot poller) may be an old session still running the
+previous version. Followers defer to whoever holds the control port, so every
+session keeps the old leader's behavior until that process exits. After
+updating, close **all** running channel sessions (or kill the leader process),
+then relaunch — the first new session takes leadership on the new code.
+
+To check who is leading: `curl 127.0.0.1:8787/health` reports the session
+count, and the leader writes a diagnostic log to
+`~/.claude/channels/telegram-topics/leader.log` (JSONL, 1 MB rotation) —
+lifecycle, registrations, routing decisions, and drop reasons. A leader running
+a version older than 0.5.1 writes no log at all, which is itself a tell.
 
 ## Security notes
 
@@ -201,14 +217,17 @@ membership is the boundary). To restrict to specific users:
   routing for previously-sent messages and any not-yet-answered permission
   prompt are lost, and there is a brief window before a follower re-elects.
 - One forum group per machine (all projects share it, one topic each).
-- Outbound is live-tested; inbound streaming and the tool-approval relay want a
-  real bot/group smoke test before you lean on them.
+- Outbound, inbound streaming, choice buttons, and reply routing are
+  live-tested. The tool-approval relay delivers its `🔐 Permission` prompts
+  live, but the full Allow/Deny round-trip has not been exercised on a real
+  approval yet; reactions likewise await a live test.
 
 ## Development
 
 ```
 bun install
 bun run typecheck
+bun test
 ```
 
 ## License
