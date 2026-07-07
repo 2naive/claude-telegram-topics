@@ -1,0 +1,6 @@
+{
+  "name": "telegram-topics",
+  "description": "Telegram channel for Claude Code — 1 project = 1 forum topic, concurrent multi-project. Each project's session streams into its own topic in a Telegram forum group.",
+  "version": "0.1.0",
+  "keywords": ["telegram", "messaging", "channel", "mcp", "forum", "topics"]
+}

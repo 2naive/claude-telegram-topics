@@ -1,0 +1,18 @@
+claude-telegram-topics
+Copyright 2026 the claude-telegram-topics authors
+
+This product is a derivative work of the official Telegram channel plugin for
+Claude Code by Anthropic ("claude-channel-telegram"), licensed under the
+Apache License, Version 2.0:
+
+  https://github.com/anthropics/claude-plugins-official
+  (external_plugins/telegram)
+
+Changes from the original:
+  - 1 project = 1 Telegram forum topic (persisted project -> topic map)
+  - Concurrent multi-project support via an in-process leader/follower bridge
+    (a single getUpdates consumer owns the bot; other sessions route over a
+    loopback HTTP control API)
+  - Rewritten in this repository's module layout
+
+Portions © Anthropic, PBC, used under the Apache License 2.0.
