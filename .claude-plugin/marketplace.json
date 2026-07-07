@@ -2,7 +2,7 @@
   "name": "claude-telegram-topics",
   "description": "Telegram channel for Claude Code — 1 project = 1 forum topic, concurrent multi-project.",
   "owner": {
-    "name": "claude-telegram-topics"
+    "name": "2naive"
   },
   "plugins": [
     {

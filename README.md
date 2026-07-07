@@ -9,9 +9,6 @@ Inbound messages arrive in your session automatically (as a real Claude Code
 channel); you reply with a tool. A clean, self-marketplaced fork of Anthropic's
 official Telegram plugin (Apache-2.0) — see [`NOTICE`](./NOTICE).
 
-> Replace `YOUR-GITHUB-USERNAME` below with the account you publish this repo
-> under (it also appears in `.claude-plugin/plugin.json`).
-
 ## Why
 
 Telegram allows exactly one `getUpdates` consumer per bot token, so the official
@@ -44,7 +41,7 @@ plugin is single-session and has no per-project threads. This fork fixes both:
 ## Install
 
 ```
-/plugin marketplace add YOUR-GITHUB-USERNAME/claude-telegram-topics
+/plugin marketplace add 2naive/claude-telegram-topics
 /plugin install telegram-topics@claude-telegram-topics
 /reload-plugins
 ```
