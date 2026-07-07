@@ -1,0 +1,69 @@
+import { test, expect, describe } from "bun:test";
+import {
+  parseCallback,
+  permCallbackData,
+  sessionPrefix,
+  truncate,
+} from "../src/routing.ts";
+
+describe("parseCallback", () => {
+  test("parses a permission button", () => {
+    expect(parseCallback("perm:allow:ab12cd34:xyzab")).toEqual({
+      kind: "permission",
+      behavior: "allow",
+      sessionId: "ab12cd34",
+      requestId: "xyzab",
+    });
+  });
+
+  test("parses deny and more behaviors", () => {
+    expect(parseCallback("perm:deny:s:r")).toMatchObject({ behavior: "deny" });
+    expect(parseCallback("perm:more:s:r")).toMatchObject({ behavior: "more" });
+  });
+
+  test("round-trips permCallbackData", () => {
+    const data = permCallbackData("allow", "sess1234", "reqid");
+    expect(parseCallback(data)).toEqual({
+      kind: "permission",
+      behavior: "allow",
+      sessionId: "sess1234",
+      requestId: "reqid",
+    });
+  });
+
+  test("parses a numeric choice index", () => {
+    expect(parseCallback("2")).toEqual({ kind: "choice", index: 2 });
+  });
+
+  test("treats anything else as raw", () => {
+    expect(parseCallback("hello")).toEqual({ kind: "raw", data: "hello" });
+  });
+
+  test("does not misread a raw string that merely starts with 'perm'", () => {
+    expect(parseCallback("permission").kind).toBe("raw");
+  });
+});
+
+describe("sessionPrefix", () => {
+  test("is empty for a single session", () => {
+    expect(sessionPrefix("main", 1)).toBe("");
+  });
+
+  test("tags when the topic has more than one session", () => {
+    expect(sessionPrefix("main", 2)).toBe("«main» ");
+  });
+
+  test("is empty when there is no label", () => {
+    expect(sessionPrefix("", 3)).toBe("");
+  });
+});
+
+describe("truncate", () => {
+  test("leaves short strings untouched", () => {
+    expect(truncate("hi", 10)).toBe("hi");
+  });
+
+  test("cuts and ellipsizes long strings", () => {
+    expect(truncate("abcdef", 3)).toBe("abc…");
+  });
+});

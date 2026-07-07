@@ -155,6 +155,20 @@ the session. This is the remote stand-in for reaching over to the terminal.
   only what you initiated. The buttons are the trusted path; free-text "yes" is
   not honored.
 
+## Topics & sessions
+
+- **Topic title = the project's folder name** (e.g. `my-repo`). Identity is the
+  *normalized full path* of the git root (or the cwd, when not a repo), so the
+  same project always lands in the same topic even if the path is spelled with
+  different slashes or letter case; two unrelated repos that happen to share a
+  folder name get separate topics. Override the title with
+  `TG_TOPICS_SESSION_NAME`.
+- **Two sessions on one project** share that project's single topic. Outbound
+  messages are then prefixed with a short session tag (the git branch, or a
+  session id) so you can tell them apart. Replying to a message — or tapping its
+  buttons, or reacting to it — routes back to the exact session that sent it; a
+  fresh message with no reply target is delivered to every session on the topic.
+
 ## Access control
 
 By default any member of the forum group can drive sessions (the group's

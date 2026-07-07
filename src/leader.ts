@@ -24,6 +24,12 @@ import {
 } from "./config.ts";
 import { isAllowedUser, assertSendable } from "./access.ts";
 import { resolveTopic, recreateTopic } from "./topics.ts";
+import {
+  parseCallback,
+  permCallbackData,
+  sessionPrefix,
+  truncate,
+} from "./routing.ts";
 
 export type Inbound =
   | { type: "message"; from: string; text: string; messageId: number; ts: number }
@@ -35,6 +41,7 @@ type Session = {
   id: string;
   project: string;
   topicId: number;
+  label: string;
   queue: Inbound[];
   waiter: ((v: void) => void) | null;
   waiterTimer: ReturnType<typeof setTimeout> | null;
@@ -156,29 +163,35 @@ function initBot(): void {
       text = "[non-text message]";
     }
 
-    deliver(topicId, {
+    const inbound: Inbound = {
       type: "message",
       from,
       text,
       messageId: m.message_id,
       ts: Date.now(),
-    });
+    };
+    // A reply to a specific session's message routes only to that session; a
+    // fresh (non-reply) message still fans to every session on the topic.
+    const owner = m.reply_to_message
+      ? ownerSession(m.reply_to_message.message_id)
+      : undefined;
+    if (owner) deliverToSession(owner, inbound);
+    else deliver(topicId, inbound);
   });
 
   bot.on("callback_query", async (ctx) => {
     const cb = ctx.callbackQuery;
     const msg = cb.message;
-    const cbData = cb.data ?? "";
+    const parsed = parseCallback(cb.data ?? "");
 
-    // Permission-relay buttons: perm:<behavior>:<sessionId>:<requestId>.
-    // Handled entirely here — never delivered as a normal button choice.
-    const perm = /^perm:(allow|deny|more):([^:]+):(.+)$/.exec(cbData);
-    if (perm) {
+    // Permission-relay buttons are handled entirely here — never delivered as a
+    // normal button choice.
+    if (parsed.kind === "permission") {
       await handlePermissionCallback(
         ctx,
-        perm[1] as "allow" | "deny" | "more",
-        perm[2]!,
-        perm[3]!,
+        parsed.behavior,
+        parsed.sessionId,
+        parsed.requestId,
       );
       return;
     }
@@ -186,19 +199,27 @@ function initBot(): void {
     await ctx.answerCallbackQuery().catch(() => {});
     if (!msg || !inGroup(msg.chat.id)) return;
     if (!isAllowedUser(cb.from?.id)) return;
-    const topicId = msg.message_thread_id;
-    if (topicId === undefined) return;
-    // callback_data is the option index; map it back to the label we sent so the
-    // session sees the human-readable choice, not a bare number.
-    const opts = sentMessageOptions.get(msg.message_id);
-    const data = opts && /^\d+$/.test(cbData) ? (opts[Number(cbData)] ?? cbData) : cbData;
-    deliver(topicId, {
+    if (msg.message_thread_id === undefined) return;
+    // A choice button's callback_data is the option index; map it back to the
+    // label we sent so the session sees the human-readable choice.
+    let data: string;
+    if (parsed.kind === "choice") {
+      const opts = sentMessageOptions.get(msg.message_id);
+      data = opts?.[parsed.index] ?? String(parsed.index);
+    } else {
+      data = parsed.data;
+    }
+    const inbound: Inbound = {
       type: "callback",
       from: cb.from?.username ?? String(cb.from?.id ?? "user"),
       data,
       messageId: msg.message_id,
       ts: Date.now(),
-    });
+    };
+    // Route the tap to the session that posted the buttons; else fan to topic.
+    const owner = ownerSession(msg.message_id);
+    if (owner) deliverToSession(owner, inbound);
+    else deliver(msg.message_thread_id, inbound);
   });
 
   bot.on("message_reaction", (ctx) => {
@@ -209,13 +230,17 @@ function initBot(): void {
     if (topicId === undefined) return;
     const emoji = r.new_reaction.find((x) => x.type === "emoji")?.emoji ?? "";
     if (!emoji) return;
-    deliver(topicId, {
+    const inbound: Inbound = {
       type: "reaction",
       from: r.user?.username ?? String(r.user?.id ?? "user"),
       emoji,
       messageId: r.message_id,
       ts: Date.now(),
-    });
+    };
+    // Route to the session that sent the reacted message; else fan to topic.
+    const owner = ownerSession(r.message_id);
+    if (owner) deliverToSession(owner, inbound);
+    else deliver(topicId, inbound);
   });
 }
 
@@ -255,6 +280,27 @@ function trackOptions(messageId: number, options: string[]): void {
   }
 }
 
+// Which session sent a given message, so a reply / button tap / reaction on it
+// routes back to that specific session instead of fanning to every session on
+// the topic — the difference that matters when a project has two sessions.
+const sentMessageSession = new Map<number, string>();
+function trackSession(messageId: number, sessionId: string): void {
+  sentMessageSession.set(messageId, sessionId);
+  if (sentMessageSession.size > SENT_LIMIT) {
+    const drop = sentMessageSession.size - SENT_LIMIT / 2;
+    let i = 0;
+    for (const k of sentMessageSession.keys()) {
+      if (i++ >= drop) break;
+      sentMessageSession.delete(k);
+    }
+  }
+}
+// The live session that owns a message, if it still exists.
+function ownerSession(messageId: number): string | undefined {
+  const sid = sentMessageSession.get(messageId);
+  return sid && sessions.has(sid) ? sid : undefined;
+}
+
 // --- Permission relay (opt-in `claude/channel/permission`) ---
 //
 // Claude Code sends notifications/claude/channel/permission_request to the
@@ -273,10 +319,6 @@ type PendingPermission = {
 const pendingPermissions = new Map<string, PendingPermission>();
 const permKey = (sessionId: string, requestId: string): string =>
   `${sessionId}:${requestId}`;
-
-function truncate(s: string, n: number): string {
-  return s.length > n ? s.slice(0, n) + "…" : s;
-}
 
 async function handlePermissionCallback(
   ctx: Context,
@@ -315,8 +357,8 @@ async function handlePermissionCallback(
         reply_markup: {
           inline_keyboard: [
             [
-              { text: "✅ Allow", callback_data: `perm:allow:${sessionId}:${requestId}` },
-              { text: "❌ Deny", callback_data: `perm:deny:${sessionId}:${requestId}` },
+              { text: "✅ Allow", callback_data: permCallbackData("allow", sessionId, requestId) },
+              { text: "❌ Deny", callback_data: permCallbackData("deny", sessionId, requestId) },
             ],
           ],
         },
@@ -383,12 +425,14 @@ async function withRecovery<T>(
 }
 
 async function sendText(s: Session, text: string, options?: string[]): Promise<number> {
+  const outText =
+    sessionPrefix(s.label, topicSessions.get(s.topicId)?.size ?? 1) + text;
   const msgId = await withRecovery(s, async (topicId) => {
     const reply_markup = options?.length
       ? { inline_keyboard: options.map((o, i) => [{ text: o, callback_data: String(i) }]) }
       : undefined;
     try {
-      const sent = await bot.api.sendMessage(GROUP_CHAT_ID, text, {
+      const sent = await bot.api.sendMessage(GROUP_CHAT_ID, outText, {
         message_thread_id: topicId,
         parse_mode: "Markdown",
         reply_markup,
@@ -401,7 +445,7 @@ async function sendText(s: Session, text: string, options?: string[]): Promise<n
         e.error_code === 400 &&
         /can't parse/i.test(e.description)
       ) {
-        const sent = await bot.api.sendMessage(GROUP_CHAT_ID, text, {
+        const sent = await bot.api.sendMessage(GROUP_CHAT_ID, outText, {
           message_thread_id: topicId,
           reply_markup,
         });
@@ -411,6 +455,7 @@ async function sendText(s: Session, text: string, options?: string[]): Promise<n
     }
   });
   trackSent(msgId, s.topicId);
+  trackSession(msgId, s.id);
   if (options?.length) trackOptions(msgId, options);
   return msgId;
 }
@@ -419,14 +464,17 @@ const PHOTO_EXT = new Set([".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"]);
 
 async function sendFile(s: Session, path: string, caption: string): Promise<number> {
   const isPhoto = PHOTO_EXT.has(path.slice(path.lastIndexOf(".")).toLowerCase());
+  const cap =
+    sessionPrefix(s.label, topicSessions.get(s.topicId)?.size ?? 1) + caption;
   const msgId = await withRecovery(s, async (topicId) => {
-    const opts = { message_thread_id: topicId, caption: caption || undefined };
+    const opts = { message_thread_id: topicId, caption: cap || undefined };
     const sent = isPhoto
       ? await bot.api.sendPhoto(GROUP_CHAT_ID, new InputFile(path), opts)
       : await bot.api.sendDocument(GROUP_CHAT_ID, new InputFile(path), opts);
     return sent.message_id;
   });
   trackSent(msgId, s.topicId);
+  trackSession(msgId, s.id);
   return msgId;
 }
 
@@ -448,7 +496,11 @@ async function handle(req: Request): Promise<Response> {
   }
 
   if (path === "/register" && req.method === "POST") {
-    const { project, name } = (await req.json()) as { project: string; name: string };
+    const { project, name, label } = (await req.json()) as {
+      project: string;
+      name: string;
+      label?: string;
+    };
     let topicId: number;
     try {
       topicId = await resolveTopic(bot.api, project, name);
@@ -460,6 +512,9 @@ async function handle(req: Request): Promise<Response> {
       id,
       project,
       topicId,
+      // A branch name (from the follower) or a short id slice — used only to tag
+      // outbound messages when the topic has more than one session.
+      label: (label ?? "").trim() || id.slice(0, 4),
       queue: [],
       waiter: null,
       waiterTimer: null,
@@ -526,10 +581,10 @@ async function handle(req: Request): Promise<Response> {
             message_thread_id: s.topicId,
             reply_markup: {
               inline_keyboard: [
-                [{ text: "🔎 See more", callback_data: `perm:more:${s.id}:${requestId}` }],
+                [{ text: "🔎 See more", callback_data: permCallbackData("more", s.id, requestId) }],
                 [
-                  { text: "✅ Allow", callback_data: `perm:allow:${s.id}:${requestId}` },
-                  { text: "❌ Deny", callback_data: `perm:deny:${s.id}:${requestId}` },
+                  { text: "✅ Allow", callback_data: permCallbackData("allow", s.id, requestId) },
+                  { text: "❌ Deny", callback_data: permCallbackData("deny", s.id, requestId) },
                 ],
               ],
             },

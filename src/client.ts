@@ -7,7 +7,7 @@
 // disk, so the same project lands back in the same topic).
 
 import { CONTROL_PORT } from "./config.ts";
-import { projectKey, projectName } from "./project.ts";
+import { projectKey, projectName, sessionLabel } from "./project.ts";
 import { tryBecomeLeader } from "./leader.ts";
 import type { Inbound } from "./leader.ts";
 
@@ -31,7 +31,11 @@ async function register(): Promise<void> {
   const resp = await fetch(`${BASE}/register`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ project: projectKey(), name: projectName() }),
+    body: JSON.stringify({
+      project: projectKey(),
+      name: projectName(),
+      label: sessionLabel(),
+    }),
     signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
   });
   if (!resp.ok) {

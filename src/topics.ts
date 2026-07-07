@@ -7,13 +7,17 @@
 import { existsSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import type { Api } from "grammy";
 import { GROUP_CHAT_ID, TOPICS_FILE } from "./config.ts";
+import { normalizePath } from "./paths.ts";
 
 type TopicRecord = { topicId: number; name: string; createdAt: number };
 type TopicMap = Record<string, TopicRecord>;
 
+let migratedDirty = false;
 let map: TopicMap = load();
+// Persist the key migration (if any) now that `map` is initialized.
+if (migratedDirty) persist();
 
-function isTopicMap(v: unknown): v is TopicMap {
+export function isTopicMap(v: unknown): v is TopicMap {
   if (!v || typeof v !== "object" || Array.isArray(v)) return false;
   for (const rec of Object.values(v as Record<string, unknown>)) {
     if (!rec || typeof rec !== "object") return false;
@@ -28,7 +32,18 @@ function load(): TopicMap {
       const parsed: unknown = JSON.parse(readFileSync(TOPICS_FILE, "utf8"));
       // Guard against valid JSON of the wrong shape, not just parse errors —
       // a poisoned map would otherwise re-create duplicate topics forever.
-      if (isTopicMap(parsed)) return parsed;
+      if (isTopicMap(parsed)) {
+        // Re-key legacy entries under the normalized project key, so a map
+        // written before path normalization keeps resolving to its existing
+        // topic instead of creating a duplicate. First entry wins on collision.
+        const out: TopicMap = {};
+        for (const [k, rec] of Object.entries(parsed)) {
+          const nk = normalizePath(k);
+          if (nk !== k) migratedDirty = true;
+          if (!(nk in out)) out[nk] = rec;
+        }
+        return out;
+      }
     }
   } catch {
     // missing / corrupt / parse error — start clean rather than crash the leader
