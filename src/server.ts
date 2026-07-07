@@ -19,6 +19,7 @@ import {
   type Request,
   type Result,
 } from "@modelcontextprotocol/sdk/types.js";
+import { z } from "zod";
 import { existsSync } from "node:fs";
 import { assertConfigured } from "./config.ts";
 import { assertSendable } from "./access.ts";
@@ -28,10 +29,15 @@ import type { Inbound } from "./leader.ts";
 
 // Custom outbound notification, added to the server's notification union so
 // mcp.notification() type-checks without a cast.
-type ChannelNotification = {
-  method: "notifications/claude/channel";
-  params: { content: string; meta: Record<string, string> };
-};
+type ChannelNotification =
+  | {
+      method: "notifications/claude/channel";
+      params: { content: string; meta: Record<string, string> };
+    }
+  | {
+      method: "notifications/claude/channel/permission";
+      params: { request_id: string; behavior: "allow" | "deny" };
+    };
 
 const INSTRUCTIONS = [
   "This channel bridges one Telegram forum topic to THIS project's session.",
@@ -59,9 +65,47 @@ const mcp = new Server<Request, ChannelNotification, Result>(
   {
     capabilities: {
       tools: {},
-      experimental: { "claude/channel": {} },
+      experimental: {
+        "claude/channel": {},
+        // Opt into tool-approval relay: Claude Code then sends permission_request
+        // notifications for tool calls that need approval (handler below). We
+        // authenticate the replier (isAllowedUser / group membership) before
+        // acting on a decision, as this capability requires.
+        "claude/channel/permission": {},
+      },
     },
     instructions: INSTRUCTIONS,
+  },
+);
+
+// --- Inbound: tool-approval relay ---
+//
+// Claude Code sends this when a tool call needs approval (we opted in via the
+// claude/channel/permission capability). Forward it to the leader, which posts
+// Allow/Deny buttons into this project's topic; the tapped decision returns
+// through the normal inbound queue as a "permission" message (see pushInbound)
+// and is emitted back to Claude Code as notifications/claude/channel/permission.
+mcp.setNotificationHandler(
+  z.object({
+    method: z.literal("notifications/claude/channel/permission_request"),
+    params: z.object({
+      request_id: z.string(),
+      tool_name: z.string(),
+      description: z.string(),
+      input_preview: z.string(),
+    }),
+  }),
+  async ({ params }) => {
+    try {
+      await channel.askPermission({
+        requestId: params.request_id,
+        toolName: params.tool_name,
+        description: params.description,
+        inputPreview: params.input_preview,
+      });
+    } catch (e) {
+      process.stderr.write(`telegram-topics: permission relay failed: ${e}\n`);
+    }
   },
 );
 
@@ -74,6 +118,17 @@ function safe(s: string): string {
 }
 
 function pushInbound(m: Inbound): void {
+  if (m.type === "permission") {
+    void mcp
+      .notification({
+        method: "notifications/claude/channel/permission",
+        params: { request_id: m.requestId, behavior: m.behavior },
+      })
+      .catch((e) =>
+        process.stderr.write(`telegram-topics: permission push failed: ${e}\n`),
+      );
+    return;
+  }
   const content =
     m.type === "message"
       ? m.text

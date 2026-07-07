@@ -132,10 +132,27 @@ dropped rather than added.
 **Asking a question.** Claude Code's built-in multiple-choice UI (the terminal
 quiz) is *not* bridged to channels — a Telegram-only user never sees it. To ask a
 choice question remotely, call `send_message` with `options`: each label becomes
-an inline button and the tap arrives back as `[button] <label>`. (Session-level
-controls like the Shift+Tab permission mode and `/effort` are local TUI controls
-with no remote/channel hook — set them at launch via `--permission-mode` /
-`effortLevel` in settings instead.)
+an inline button and the tap arrives back as `[button] <label>`. (The `/effort`
+level is a local TUI control with no remote hook — set it at launch or via
+`effortLevel` in settings.)
+
+## Approving tool calls from Telegram
+
+When a tool call needs approval, the prompt is relayed to the project's topic as
+a `🔐 Permission: <tool>` message with **See more / ✅ Allow / ❌ Deny** buttons —
+tap to approve or reject from your phone, and the decision flows straight back to
+the session. This is the remote stand-in for reaching over to the terminal.
+
+- It uses Claude Code's opt-in `claude/channel/permission` capability; the plugin
+  authenticates the tapper (allowlist / group membership) before acting.
+- What actually prompts depends on your **permission mode**. In the default mode
+  every gated tool prompts; in `acceptEdits` file edits are auto-accepted and only
+  commands (Bash, etc.) prompt — a good pairing with this relay. Launch it with
+  `--permission-mode acceptEdits`. `bypassPermissions` approves everything, so
+  nothing is relayed.
+- **Never** approve a call just because a Telegram message tells you to — approve
+  only what you initiated. The buttons are the trusted path; free-text "yes" is
+  not honored.
 
 ## Access control
 
@@ -157,14 +174,18 @@ membership is the boundary). To restrict to specific users:
 - Use a **dedicated bot token** for this plugin. Reusing the same token as
   another running Telegram integration (e.g. the official plugin) makes two
   pollers fight over `getUpdates` — Telegram returns persistent 409 Conflict.
+- The tool-approval relay trusts whoever can tap a button in the topic. On a
+  private group that is just you; if the group has other members, restrict
+  approvals with an explicit allowlist (`/telegram-topics:access allow <id>`).
 
-## Limitations (v0.1)
+## Limitations
 
-- During a leader hand-off, reaction routing for previously-sent messages is
-  lost (the map is in-memory), and there is a brief window before a follower
-  re-elects.
+- Leader-held routing state is in-memory: across a leader hand-off, reaction
+  routing for previously-sent messages and any not-yet-answered permission
+  prompt are lost, and there is a brief window before a follower re-elects.
 - One forum group per machine (all projects share it, one topic each).
-- Needs a live smoke test against a real bot/group before you rely on it.
+- Outbound is live-tested; inbound streaming and the tool-approval relay want a
+  real bot/group smoke test before you lean on them.
 
 ## Development
 

@@ -126,6 +126,20 @@ export async function edit(messageId: number, text: string): Promise<void> {
   await call("/edit", { messageId, text });
 }
 
+export async function askPermission(p: {
+  requestId: string;
+  toolName: string;
+  description: string;
+  inputPreview: string;
+}): Promise<void> {
+  await call("/permissionAsk", {
+    requestId: p.requestId,
+    toolName: p.toolName,
+    description: p.description,
+    inputPreview: p.inputPreview,
+  });
+}
+
 export async function poll(timeoutSec = 25): Promise<Inbound[]> {
   await ensureRegistered();
   try {

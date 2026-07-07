@@ -6,7 +6,7 @@
 // leader holds the bot, the poller, the session registry, and does all topic
 // routing.
 
-import { Bot, InputFile, GrammyError } from "grammy";
+import { Bot, InputFile, GrammyError, type Context } from "grammy";
 import { join } from "node:path";
 import {
   mkdirSync,
@@ -28,7 +28,8 @@ import { resolveTopic, recreateTopic } from "./topics.ts";
 export type Inbound =
   | { type: "message"; from: string; text: string; messageId: number; ts: number }
   | { type: "callback"; from: string; data: string; messageId: number; ts: number }
-  | { type: "reaction"; from: string; emoji: string; messageId: number; ts: number };
+  | { type: "reaction"; from: string; emoji: string; messageId: number; ts: number }
+  | { type: "permission"; requestId: string; behavior: "allow" | "deny"; messageId: number; ts: number };
 
 type Session = {
   id: string;
@@ -60,25 +61,31 @@ function unbindTopic(sid: string, topicId: number): void {
   }
 }
 
+function wake(s: Session): void {
+  if (s.waiter) {
+    const w = s.waiter;
+    s.waiter = null;
+    // Cancel the long-poll timer we're satisfying early, or it would fire
+    // later and clobber a *newer* poll's waiter.
+    if (s.waiterTimer) {
+      clearTimeout(s.waiterTimer);
+      s.waiterTimer = null;
+    }
+    w();
+  }
+}
+
+function deliverToSession(sid: string, msg: Inbound): void {
+  const s = sessions.get(sid);
+  if (!s) return;
+  s.queue.push(msg);
+  wake(s);
+}
+
 function deliver(topicId: number, msg: Inbound): void {
   const set = topicSessions.get(topicId);
   if (!set || set.size === 0) return;
-  for (const sid of set) {
-    const s = sessions.get(sid);
-    if (!s) continue;
-    s.queue.push(msg);
-    if (s.waiter) {
-      const w = s.waiter;
-      s.waiter = null;
-      // Cancel the long-poll timer we're satisfying early, or it would fire
-      // later and clobber a *newer* poll's waiter.
-      if (s.waiterTimer) {
-        clearTimeout(s.waiterTimer);
-        s.waiterTimer = null;
-      }
-      w();
-    }
-  }
+  for (const sid of set) deliverToSession(sid, msg);
 }
 
 // --- Telegram bot ---
@@ -161,6 +168,21 @@ function initBot(): void {
   bot.on("callback_query", async (ctx) => {
     const cb = ctx.callbackQuery;
     const msg = cb.message;
+    const cbData = cb.data ?? "";
+
+    // Permission-relay buttons: perm:<behavior>:<sessionId>:<requestId>.
+    // Handled entirely here — never delivered as a normal button choice.
+    const perm = /^perm:(allow|deny|more):([^:]+):(.+)$/.exec(cbData);
+    if (perm) {
+      await handlePermissionCallback(
+        ctx,
+        perm[1] as "allow" | "deny" | "more",
+        perm[2]!,
+        perm[3]!,
+      );
+      return;
+    }
+
     await ctx.answerCallbackQuery().catch(() => {});
     if (!msg || !inGroup(msg.chat.id)) return;
     if (!isAllowedUser(cb.from?.id)) return;
@@ -168,9 +190,8 @@ function initBot(): void {
     if (topicId === undefined) return;
     // callback_data is the option index; map it back to the label we sent so the
     // session sees the human-readable choice, not a bare number.
-    const raw = cb.data ?? "";
     const opts = sentMessageOptions.get(msg.message_id);
-    const data = opts && /^\d+$/.test(raw) ? (opts[Number(raw)] ?? raw) : raw;
+    const data = opts && /^\d+$/.test(cbData) ? (opts[Number(cbData)] ?? cbData) : cbData;
     deliver(topicId, {
       type: "callback",
       from: cb.from?.username ?? String(cb.from?.id ?? "user"),
@@ -231,6 +252,94 @@ function trackOptions(messageId: number, options: string[]): void {
       if (i++ >= drop) break;
       sentMessageOptions.delete(k);
     }
+  }
+}
+
+// --- Permission relay (opt-in `claude/channel/permission`) ---
+//
+// Claude Code sends notifications/claude/channel/permission_request to the
+// requesting session's MCP server when a tool call needs approval; that server
+// calls /permissionAsk here. We post Allow/Deny buttons into the session's
+// topic and, on tap, hand the decision back to that same session — which emits
+// notifications/claude/channel/permission to Claude Code. Keyed by
+// sessionId:requestId so a request id can't collide across concurrent projects.
+type PendingPermission = {
+  sessionId: string;
+  toolName: string;
+  description: string;
+  inputPreview: string;
+  createdAt: number;
+};
+const pendingPermissions = new Map<string, PendingPermission>();
+const permKey = (sessionId: string, requestId: string): string =>
+  `${sessionId}:${requestId}`;
+
+function truncate(s: string, n: number): string {
+  return s.length > n ? s.slice(0, n) + "…" : s;
+}
+
+async function handlePermissionCallback(
+  ctx: Context,
+  behavior: "allow" | "deny" | "more",
+  sessionId: string,
+  requestId: string,
+): Promise<void> {
+  const msg = ctx.callbackQuery?.message;
+  if (!msg || !inGroup(msg.chat.id) || !isAllowedUser(ctx.from?.id)) {
+    await ctx.answerCallbackQuery({ text: "Not authorized." }).catch(() => {});
+    return;
+  }
+  const key = permKey(sessionId, requestId);
+  const pending = pendingPermissions.get(key);
+  if (!pending) {
+    await ctx
+      .answerCallbackQuery({ text: "Request no longer available." })
+      .catch(() => {});
+    return;
+  }
+
+  if (behavior === "more") {
+    let prettyInput: string;
+    try {
+      prettyInput = JSON.stringify(JSON.parse(pending.inputPreview), null, 2);
+    } catch {
+      prettyInput = pending.inputPreview;
+    }
+    const expanded =
+      `🔐 Permission: ${pending.toolName}\n\n` +
+      `tool: ${pending.toolName}\n` +
+      `description: ${pending.description}\n` +
+      `input:\n${prettyInput}`;
+    await ctx
+      .editMessageText(truncate(expanded, 3500), {
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: "✅ Allow", callback_data: `perm:allow:${sessionId}:${requestId}` },
+              { text: "❌ Deny", callback_data: `perm:deny:${sessionId}:${requestId}` },
+            ],
+          ],
+        },
+      })
+      .catch(() => {});
+    await ctx.answerCallbackQuery().catch(() => {});
+    return;
+  }
+
+  // allow / deny → delete first so a double-tap can't fire twice, then hand the
+  // decision to the owning session.
+  pendingPermissions.delete(key);
+  deliverToSession(sessionId, {
+    type: "permission",
+    requestId,
+    behavior,
+    messageId: msg.message_id,
+    ts: Date.now(),
+  });
+  const label = behavior === "allow" ? "✅ Allowed" : "❌ Denied";
+  await ctx.answerCallbackQuery({ text: label }).catch(() => {});
+  if ("text" in msg && msg.text) {
+    await ctx.editMessageText(`${msg.text}\n\n${label}`).catch(() => {});
   }
 }
 
@@ -400,6 +509,50 @@ async function handle(req: Request): Promise<Response> {
       }
       await bot.api.editMessageText(GROUP_CHAT_ID, messageId, String(body.text));
       return json({ ok: true });
+    }
+    if (path === "/permissionAsk") {
+      const requestId = String(body.requestId ?? "");
+      if (!requestId) return json({ error: "requestId required" }, 400);
+      const toolName = String(body.toolName ?? "tool");
+      const description = String(body.description ?? "");
+      const inputPreview = String(body.inputPreview ?? "");
+      const preview = inputPreview ? `\n\n${truncate(inputPreview, 350)}` : "";
+      let sentId: number;
+      try {
+        const sent = await bot.api.sendMessage(
+          GROUP_CHAT_ID,
+          `🔐 Permission: ${toolName}${preview}`,
+          {
+            message_thread_id: s.topicId,
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: "🔎 See more", callback_data: `perm:more:${s.id}:${requestId}` }],
+                [
+                  { text: "✅ Allow", callback_data: `perm:allow:${s.id}:${requestId}` },
+                  { text: "❌ Deny", callback_data: `perm:deny:${s.id}:${requestId}` },
+                ],
+              ],
+            },
+          },
+        );
+        sentId = sent.message_id;
+      } catch (e) {
+        return json({ error: String(e) }, 500);
+      }
+      pendingPermissions.set(permKey(s.id, requestId), {
+        sessionId: s.id,
+        toolName,
+        description,
+        inputPreview,
+        createdAt: Date.now(),
+      });
+      if (pendingPermissions.size > 200) {
+        const cutoff = Date.now() - 3600_000;
+        for (const [k, v] of pendingPermissions) {
+          if (v.createdAt < cutoff) pendingPermissions.delete(k);
+        }
+      }
+      return json({ ok: true, messageId: sentId });
     }
     if (path === "/poll") {
       const timeout = Number(url.searchParams.get("timeout") ?? "25") * 1000;
