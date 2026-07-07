@@ -1,0 +1,15 @@
+{
+  "name": "claude-telegram-topics",
+  "description": "Telegram channel for Claude Code — 1 project = 1 forum topic, concurrent multi-project.",
+  "owner": {
+    "name": "claude-telegram-topics"
+  },
+  "plugins": [
+    {
+      "name": "telegram-topics",
+      "description": "Stream each project's Claude Code session into its own Telegram forum topic. Concurrent multi-project via a leader/follower bridge.",
+      "category": "productivity",
+      "source": "./"
+    }
+  ]
+}

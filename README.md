@@ -1,26 +1,29 @@
 # claude-telegram-topics
 
-A Telegram channel for [Claude Code](https://claude.com/claude-code) where
+A **Telegram channel for [Claude Code](https://claude.com/claude-code)** where
 **1 project = 1 forum topic**. Every project's session streams into its own
-topic inside one Telegram forum group, and multiple projects run **concurrently**
-— each in its own thread.
+topic inside a single Telegram forum group, and multiple projects run
+**concurrently** — each in its own thread.
 
-A clean fork of Anthropic's official Telegram plugin (Apache-2.0). See
-[`NOTICE`](./NOTICE) for attribution and the list of changes.
+Inbound messages arrive in your session automatically (as a real Claude Code
+channel); you reply with a tool. A clean, self-marketplaced fork of Anthropic's
+official Telegram plugin (Apache-2.0) — see [`NOTICE`](./NOTICE).
+
+> Replace `YOUR-GITHUB-USERNAME` below with the account you publish this repo
+> under (it also appears in `.claude-plugin/plugin.json`).
 
 ## Why
 
 Telegram allows exactly one `getUpdates` consumer per bot token, so the official
-plugin is single-session: a new session steals the bot from the old one, and it
-has no concept of per-project threads. This fork solves both:
+plugin is single-session and has no per-project threads. This fork fixes both:
 
-- **Project → topic.** The git root of your session's cwd maps to a stable
-  forum topic (`topics.json`). Reopen the same repo — even from a subdirectory,
-  even in a second session — and you land in the same topic.
+- **Project → topic.** The git root of your session's cwd maps to a stable forum
+  topic (persisted in `topics.json`). Reopen the same repo — even from a
+  subdirectory, even in a second session — and you land in the same topic.
 - **Concurrent projects.** The first session to start binds a loopback control
   port and becomes the **leader**: it owns the single bot poller. Every other
-  session is a **follower** that reaches the bot through the leader over
-  `127.0.0.1`. If the leader exits, the next session transparently re-elects.
+  session is a **follower** that reaches the bot over `127.0.0.1`. If the leader
+  exits, the next session transparently re-elects.
 
 ```
  session A ─┐
@@ -32,49 +35,66 @@ has no concept of per-project threads. This fork solves both:
 
 ## Prerequisites
 
-- [Bun](https://bun.sh) — the server runs on Bun.
+- [Bun](https://bun.sh) — the server runs on Bun (works natively on Windows).
 - A Telegram **bot** ([@BotFather](https://t.me/BotFather) → `/newbot`).
-- A Telegram **forum-enabled supergroup** (group → *Edit* → *Topics* on). Add
-  the bot as an **admin** with *Manage Topics* (and reactions require admin).
+- A Telegram **forum-enabled supergroup**: create a group, enable **Topics** in
+  its settings, add the bot as an **admin** with **Manage Topics** (Telegram does
+  not grant that right automatically on promotion).
 
-## Setup
+## Install
 
-1. Install and build:
-   ```
-   git clone https://github.com/<you>/claude-telegram-topics
-   cd claude-telegram-topics && bun install
-   ```
+```
+/plugin marketplace add YOUR-GITHUB-USERNAME/claude-telegram-topics
+/plugin install telegram-topics@claude-telegram-topics
+/reload-plugins
+```
 
-2. Configure `~/.claude/channels/telegram-topics/.env`:
-   ```
-   TELEGRAM_BOT_TOKEN=123456789:AAH...
-   TELEGRAM_GROUP_CHAT_ID=-1001234567890
-   # optional: only these numeric user ids may drive sessions
-   TELEGRAM_ALLOWED_USER_IDS=11111111,22222222
-   # optional: control port (default 8787) and state dir
-   # TG_TOPICS_PORT=8787
-   ```
-   Get the group id by adding the bot and reading any message's `chat.id`
-   (e.g. via [@userinfobot](https://t.me/userinfobot) added to the group), or
-   from the Bot API `getUpdates`.
+## Configure
 
-3. Register it as an MCP server for Claude Code (either install this repo as a
-   plugin, or point your MCP config at `bun run --cwd <repo> start`).
+```
+/telegram-topics:configure <your-bot-token>
+/telegram-topics:configure group <-100…group-id>
+```
 
-## Tools
+This writes `~/.claude/channels/telegram-topics/.env` and runs a **preflight**
+check (token valid, group is a forum, bot can manage topics) so setup mistakes
+surface as clear errors instead of silent failures. Run `/telegram-topics:configure`
+with no argument any time to see status.
 
-Deliberately thin and transparent — inbound content is relayed **verbatim**
-(no editorializing of reactions, no autonomous model calls):
+## Enable the channel
+
+The channel is not active until you launch a session with it:
+
+```
+claude --channels plugin:telegram-topics@claude-telegram-topics
+```
+
+(During the channels research preview a non-allowlisted channel also needs
+`--dangerously-load-development-channels`.)
+
+## Use it
+
+- Messages you send to a project's topic arrive in that project's session
+  automatically as `<channel source="telegram-topics" …>` tags. If you attach a
+  file, its downloaded local path appears in the message as `saved:<path>`.
+- The session replies with tools, all scoped to this project's topic:
 
 | Tool | Purpose |
 | --- | --- |
-| `send_message(text)` | Post to this project's topic; no wait. |
-| `ask_user(question, options?)` | Post and wait up to 5 min for a reply (text, button, or reaction). |
-| `check_messages()` | Return messages sent since the last check (non-blocking). |
-| `wait_for_message()` | Block until the next message (up to 25 min). |
+| `send_message(text)` | Post to this project's topic (Markdown supported). |
 | `send_file(path, caption?)` | Send a local file (photo or document). Refuses to send channel state. |
 | `react(message_id, emoji)` | React with one of Telegram's allowed emoji. |
 | `edit_message(message_id, text)` | Edit a message the bot sent. |
+
+## Access control
+
+By default any member of the forum group can drive sessions (the group's
+membership is the boundary). To restrict to specific users:
+
+```
+/telegram-topics:access allow <numeric-user-id>
+/telegram-topics:access            # show the current allowlist
+```
 
 ## Security notes
 
@@ -83,16 +103,24 @@ Deliberately thin and transparent — inbound content is relayed **verbatim**
 - The loopback control API is **unauthenticated** — any local process can reach
   it. Fine for a single-user machine; do not run on shared/multi-user hosts as-is.
 - `send_file` refuses paths inside the state dir (won't leak the token).
-- Inbound files are written to `~/.claude/channels/telegram-topics/inbox/` with
-  sanitized names.
+- Use a **dedicated bot token** for this plugin. Reusing the same token as
+  another running Telegram integration (e.g. the official plugin) makes two
+  pollers fight over `getUpdates` — Telegram returns persistent 409 Conflict.
 
 ## Limitations (v0.1)
 
-- During a leader hand-off (leader session exits), inbound messages are not
-  buffered until a follower re-elects on its next call.
+- During a leader hand-off, reaction routing for previously-sent messages is
+  lost (the map is in-memory), and there is a brief window before a follower
+  re-elects.
 - One forum group per machine (all projects share it, one topic each).
-- Needs a live smoke test against a real bot/group; grammy calls and topic
-  permissions are exercised only at runtime.
+- Needs a live smoke test against a real bot/group before you rely on it.
+
+## Development
+
+```
+bun install
+bun run typecheck
+```
 
 ## License
 
