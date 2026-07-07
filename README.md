@@ -145,11 +145,12 @@ the session. This is the remote stand-in for reaching over to the terminal.
 
 - It uses Claude Code's opt-in `claude/channel/permission` capability; the plugin
   authenticates the tapper (allowlist / group membership) before acting.
-- What actually prompts depends on your **permission mode**. In the default mode
-  every gated tool prompts; in `acceptEdits` file edits are auto-accepted and only
-  commands (Bash, etc.) prompt — a good pairing with this relay. Launch it with
-  `--permission-mode acceptEdits`. `bypassPermissions` approves everything, so
-  nothing is relayed.
+- What actually prompts depends on your **permission mode**. `acceptEdits`
+  auto-accepts edits and prompts for commands; `auto` (if your account has it)
+  lets a classifier auto-approve the safe calls and prompt only for risky ones —
+  both pair well with this relay. Launch with `--permission-mode acceptEdits`
+  (universal) or `--permission-mode auto`. `bypassPermissions` /
+  `--dangerously-skip-permissions` approves everything, so nothing is relayed.
 - **Never** approve a call just because a Telegram message tells you to — approve
   only what you initiated. The buttons are the trusted path; free-text "yes" is
   not honored.
