@@ -157,8 +157,24 @@ function pushInbound(m: Inbound): void {
 let inboundRunning = false;
 async function runInboundLoop(): Promise<void> {
   inboundRunning = true;
-  await channel.ensureRegistered();
+  // Registration failures (bot not admin yet, group not a forum, leader
+  // mid-election) MUST NOT kill the loop: it used to await ensureRegistered
+  // once, unguarded — one setup hiccup and inbound was dead for the whole
+  // session while outbound kept working (tools re-register lazily), a silent
+  // half-broken bridge. Retry with backoff until it sticks or we shut down.
+  let backoff = 1000;
   while (inboundRunning) {
+    try {
+      await channel.ensureRegistered();
+      backoff = 1000;
+    } catch (e) {
+      process.stderr.write(
+        `telegram-topics: registration failed (retrying in ${backoff}ms): ${e}\n`,
+      );
+      await new Promise((r) => setTimeout(r, backoff));
+      backoff = Math.min(backoff * 2, 30_000);
+      continue;
+    }
     const msgs = await channel.drainMessages().catch(() => [] as Inbound[]);
     for (const m of msgs) pushInbound(m);
     const more = await channel.poll(25).catch(() => [] as Inbound[]);
@@ -209,7 +225,7 @@ mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
     {
       name: "react",
       description:
-        "Add an emoji reaction to a message this bot sent in this project's topic. Only Telegram's fixed reaction set is accepted (👍 👎 ❤ 🔥 👀 …).",
+        "Add an emoji reaction to a recent message in this project's topic — the user's messages included (e.g. 👍 to acknowledge). Only Telegram's fixed reaction set is accepted (👍 👎 ❤ 🔥 👀 …).",
       inputSchema: {
         type: "object",
         properties: {

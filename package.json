@@ -1,6 +1,6 @@
 {
   "name": "claude-telegram-topics",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "description": "Telegram channel for Claude Code with 1 project = 1 forum topic. Concurrent multi-project support via a leader/follower bridge. Clean fork of the official Anthropic Telegram plugin.",
   "license": "Apache-2.0",
   "type": "module",
@@ -8,7 +8,8 @@
   "scripts": {
     "start": "bun install --no-summary && bun src/server.ts",
     "typecheck": "bun --bun tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "preflight": "bun scripts/preflight.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

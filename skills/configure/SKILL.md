@@ -7,26 +7,31 @@ allowed-tools:
   - Write
   - Bash(ls *)
   - Bash(mkdir *)
-  - Bash(curl *)
+  - Bash(bun run *)
 ---
 
 # Configure telegram-topics
 
 State lives in `~/.claude/channels/telegram-topics/.env` (create the directory if
-missing). **Write the `.env` with LF line endings only** — a CRLF file is parsed
-incorrectly. Keys:
+missing). Write the `.env` with LF line endings (the runtime parser tolerates
+CRLF, but LF keeps every shell tool happy too). Keys:
 
 - `TELEGRAM_BOT_TOKEN` — from [@BotFather](https://t.me/BotFather) (`/newbot`)
 - `TELEGRAM_GROUP_CHAT_ID` — a forum-enabled supergroup id (looks like `-100…`)
 - `TELEGRAM_ALLOWED_USER_IDS` — optional CSV of numeric user ids (managed by
   `/telegram-topics:access`)
 
+Note: process environment variables take precedence over the `.env` — if the
+user has any `TELEGRAM_*` of these exported in their shell, warn them that the
+exported value wins over what you write here.
+
 ## Dispatch on the argument
 
 - **no argument** — Read the `.env` and report status: is the token set? is the
-  group id set? Then show the remaining steps below. Never print the token value.
+  group id set? Then run **Preflight** below and show its verdicts. Never print
+  the token value.
 - **a bot token** (looks like `123456789:AA…`) — write/replace `TELEGRAM_BOT_TOKEN`
-  in the `.env`, preserving other keys. Then run **Preflight** below.
+  in the `.env`, preserving other keys. Then run **Preflight**.
 - **`group <id>`** — write/replace `TELEGRAM_GROUP_CHAT_ID`. Then run **Preflight**.
 - **`clear`** — remove `TELEGRAM_BOT_TOKEN` from the `.env`.
 
@@ -41,29 +46,33 @@ incorrectly. Keys:
 
 ## Preflight (run after both token and group id are set)
 
-This is the single most common source of first-run failure, so validate it and
-report **actionable** errors. Read the token and group id from the `.env`, then
-(so the token never appears in a printed command, read it from the file inside
-the shell):
+Setup mistakes are the most common first-run failure, so validate and report
+**actionable** verdicts. The checks live in the plugin (`scripts/preflight.ts`)
+so they parse the `.env` exactly like the runtime (CRLF-safe, same precedence)
+and the token never appears in a command or output. Run:
 
 ```bash
-cd ~/.claude/channels/telegram-topics
-TOKEN=$(grep -E '^TELEGRAM_BOT_TOKEN=' .env | cut -d= -f2-)
-GID=$(grep -E '^TELEGRAM_GROUP_CHAT_ID=' .env | cut -d= -f2-)
-# 1) token valid?
-curl -s "https://api.telegram.org/bot$TOKEN/getMe" | grep -q '"ok":true' && echo "token OK" || echo "TOKEN INVALID"
-# 2) group is a forum?
-curl -s "https://api.telegram.org/bot$TOKEN/getChat?chat_id=$GID" | grep -q '"is_forum":true' && echo "forum OK" || echo "NOT A FORUM (enable Topics in the group)"
-# 3) bot is an admin that can manage topics?
-curl -s "https://api.telegram.org/bot$TOKEN/getChatMember?chat_id=$GID&user_id=$(curl -s "https://api.telegram.org/bot$TOKEN/getMe" | grep -oE '"id":[0-9]+' | head -1 | cut -d: -f2)" | grep -q '"can_manage_topics":true' && echo "admin OK" || echo "BOT LACKS can_manage_topics (promote it to admin with Manage Topics)"
+bun run --cwd "${CLAUDE_PLUGIN_ROOT}" preflight
 ```
 
-Report each line's result plainly. If all three are OK, tell the user the channel
-is ready and to relaunch with:
+(If `${CLAUDE_PLUGIN_ROOT}` is not substituted in your context, the plugin root
+is the installed plugin directory, e.g.
+`~/.claude/plugins/cache/claude-telegram-topics/telegram-topics/<version>`.)
+
+It prints one `OK`/`FAIL` line per check — token validity, group reachable,
+group is a forum, bot can Manage Topics, and whether another poller already
+holds the token's `getUpdates` slot (the classic shared-token 409). Report each
+verdict plainly; on 409 note that an already-running telegram-topics leader on
+this machine is a false alarm, but the official Telegram plugin being *enabled*
+is the usual real cause.
+
+If all checks pass, tell the user the channel is ready and to relaunch with:
 
 ```
-claude --channels plugin:telegram-topics@claude-telegram-topics
+claude --dangerously-load-development-channels plugin:telegram-topics@claude-telegram-topics
 ```
 
-(During the channels research preview, a non-allowlisted channel also needs
-`--dangerously-load-development-channels`.)
+During the channels research preview this flag **replaces** `--channels`
+(custom channels are not allowlisted for it), and it consumes everything after
+it as channel names — any other option (`--permission-mode`, …) must come
+BEFORE it.

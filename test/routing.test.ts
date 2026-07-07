@@ -192,3 +192,30 @@ describe("long-poll invariants", () => {
     expect(CONTROL_RESPONSE_HEADERS.connection).toBe("close");
   });
 });
+
+describe("start-session callbacks", () => {
+  test("round-trip through callback_data", async () => {
+    const { parseCallback, startCallbackData } = await import("../src/routing.ts");
+    expect(parseCallback(startCallbackData(31))).toEqual({ kind: "start", topicId: 31 });
+  });
+
+  test("does not shadow numeric choice callbacks", async () => {
+    const { parseCallback } = await import("../src/routing.ts");
+    expect(parseCallback("2")).toEqual({ kind: "choice", index: 2 });
+    expect(parseCallback("start:x")).toEqual({ kind: "raw", data: "start:x" });
+  });
+});
+
+describe("release invariants", () => {
+  test("package.json and plugin.json versions match", async () => {
+    // VERSION (hand-off, /health) derives from package.json while the plugin
+    // manager shows plugin.json — if they diverge, users see a new version
+    // installed but the leader hand-off compares old-vs-old and never fires,
+    // resurrecting the stale-leader problem with no tell.
+    const pkg = (await import("../package.json")).default as { version: string };
+    const plugin = (await import("../.claude-plugin/plugin.json")).default as {
+      version: string;
+    };
+    expect(pkg.version).toBe(plugin.version);
+  });
+});

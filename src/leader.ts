@@ -25,13 +25,21 @@ import {
   VERSION,
 } from "./config.ts";
 import { isAllowedUser, assertSendable } from "./access.ts";
-import { resolveTopic, recreateTopic } from "./topics.ts";
+import {
+  knownProjects,
+  projectForTopic,
+  projectTopicId,
+  recreateTopic,
+  resolveTopic,
+  topicName,
+} from "./topics.ts";
 import { normalizePath } from "./paths.ts";
 import {
   isNewerVersion,
   parseCallback,
   permCallbackData,
   sessionPrefix,
+  startCallbackData,
   truncate,
   CONTROL_RESPONSE_HEADERS,
   LEADER_IDLE_TIMEOUT_SEC,
@@ -40,12 +48,16 @@ import {
 import {
   flushSent,
   loadSent,
+  peekOptions,
   remapSentSessions,
   sessionForSentMessage,
   takeOptions,
   topicForSentMessage,
   trackSent,
 } from "./sent.ts";
+import { mdToTelegram, splitTelegram } from "./format.ts";
+import { apiRetry } from "./tgretry.ts";
+import { autostartEnabled, spawnSession } from "./spawn.ts";
 import { log } from "./log.ts";
 
 export type Inbound =
@@ -109,10 +121,89 @@ function deliverToSession(sid: string, msg: Inbound): void {
   wake(s);
 }
 
+// Messages that arrived for a project with no live session, held until one
+// registers. Without this a user messaging a dead topic loses the message
+// outright — the Bot API has no history, so it is unrecoverable.
+const HELD_MAX = 20;
+const HELD_TTL_MS = 30 * 60_000;
+const heldInbox = new Map<string, { msgs: Inbound[]; at: number }>(); // projectKey ->
+
+// Rate limit for the "no active session" in-topic notice (and autostart).
+const NOTICE_COOLDOWN_MS = 5 * 60_000;
+const lastNotice = new Map<number, number>(); // topicId -> ts
+
+function holdInbound(project: string, msg: Inbound): void {
+  let held = heldInbox.get(project);
+  if (!held) heldInbox.set(project, (held = { msgs: [], at: Date.now() }));
+  held.at = Date.now();
+  held.msgs.push(msg);
+  if (held.msgs.length > HELD_MAX) held.msgs.splice(0, held.msgs.length - HELD_MAX);
+}
+
+async function postNoSessionNotice(topicId: number, project: string): Promise<void> {
+  const now = Date.now();
+  if (now - (lastNotice.get(topicId) ?? 0) < NOTICE_COOLDOWN_MS) return;
+  lastNotice.set(topicId, now);
+  let note = "📴 No active session for this project — message queued.";
+  if (autostartEnabled()) {
+    const err = spawnSession(project, topicName(project));
+    note = err
+      ? `📴 No active session — message queued. Autostart failed: ${err}`
+      : "📴 No active session — message queued. 🚀 Starting one…";
+  }
+  await bot.api
+    .sendMessage(GROUP_CHAT_ID, note, {
+      message_thread_id: topicId,
+      reply_markup: autostartEnabled()
+        ? undefined
+        : {
+            inline_keyboard: [
+              [{ text: "▶️ Start session", callback_data: startCallbackData(topicId) }],
+            ],
+          },
+    })
+    .catch(() => {});
+}
+
 function deliver(topicId: number, msg: Inbound): void {
   const set = topicSessions.get(topicId);
-  if (!set || set.size === 0) return;
+  if (!set || set.size === 0) {
+    // Hold real messages for the next session; taps/reactions belong to
+    // whatever session posted the message and are meaningless later.
+    const project = projectForTopic(topicId);
+    log("deliver.none", { topic: topicId, type: msg.type, held: !!project && msg.type === "message" });
+    if (project && msg.type === "message") {
+      holdInbound(project, msg);
+      void postNoSessionNotice(topicId, project);
+    }
+    return;
+  }
   for (const sid of set) deliverToSession(sid, msg);
+}
+
+// A short-lived "typing…" in the topic acknowledges that an inbound message
+// reached a live session — from the phone, a routed message and a dead bridge
+// otherwise look identical for many seconds.
+const lastTyping = new Map<number, number>();
+function signalTyping(topicId: number): void {
+  const now = Date.now();
+  if (now - (lastTyping.get(topicId) ?? 0) < 5000) return;
+  lastTyping.set(topicId, now);
+  void bot.api
+    .sendChatAction(GROUP_CHAT_ID, "typing", { message_thread_id: topicId })
+    .catch(() => {});
+}
+
+// Recent inbound (user-sent) message ids per topic, so /react can acknowledge
+// the user's own messages — the natural "seen 👍" gesture. Bounded ring.
+const INBOUND_TRACK_MAX = 500;
+const inboundTopic = new Map<number, number>(); // messageId -> topicId
+function trackInbound(messageId: number, topicId: number): void {
+  inboundTopic.set(messageId, topicId);
+  if (inboundTopic.size > INBOUND_TRACK_MAX) {
+    const oldest = inboundTopic.keys().next().value;
+    if (oldest !== undefined) inboundTopic.delete(oldest);
+  }
 }
 
 // --- Telegram bot ---
@@ -155,8 +246,78 @@ async function downloadFile(fileId: string, filename: string): Promise<string | 
   }
 }
 
+// Uptime for /status; reset each time this process wins the port.
+let leaderSince = Date.now();
+
+function statusText(): string {
+  const up = Math.round((Date.now() - leaderSince) / 60_000);
+  const lines = [
+    `🤖 telegram-topics v${VERSION} — leader pid ${process.pid}, up ${up} min`,
+    `sessions: ${sessions.size}`,
+  ];
+  for (const [topicId, set] of topicSessions) {
+    const project = projectForTopic(topicId);
+    const labels = [...set]
+      .map((sid) => sessions.get(sid)?.label ?? sid)
+      .join(", ");
+    lines.push(`• ${project ? topicName(project) : `topic ${topicId}`}: ${labels}`);
+  }
+  for (const [project, held] of heldInbox) {
+    lines.push(`• ${topicName(project)}: ${held.msgs.length} message(s) queued, no session`);
+  }
+  return lines.join("\n");
+}
+
+function startKeyboard(): { inline_keyboard: Array<Array<{ text: string; callback_data: string }>> } | undefined {
+  const rows: Array<Array<{ text: string; callback_data: string }>> = [];
+  const seen = new Set<number>();
+  for (const project of knownProjects()) {
+    const tid = projectTopicId(project);
+    if (tid === undefined || seen.has(tid)) continue;
+    seen.add(tid);
+    const live = topicSessions.get(tid)?.size ?? 0;
+    rows.push([
+      {
+        text: live > 0 ? `${topicName(project)} (${live} live)` : topicName(project),
+        callback_data: startCallbackData(tid),
+      },
+    ]);
+    if (rows.length >= 20) break;
+  }
+  return rows.length ? { inline_keyboard: rows } : undefined;
+}
+
+// The leader answers /status and /start itself — they must work precisely when
+// no session is alive to answer. Both work from any topic AND from the General
+// topic (which carries no thread id and is otherwise ignored).
+async function handleCommand(text: string, topicId: number | undefined): Promise<boolean> {
+  const cmd = text.split("@")[0]!.trim();
+  const thread = topicId === undefined ? {} : { message_thread_id: topicId };
+  if (cmd === "/status") {
+    await bot.api.sendMessage(GROUP_CHAT_ID, statusText(), thread).catch(() => {});
+    return true;
+  }
+  if (cmd === "/start") {
+    const kb = startKeyboard();
+    await bot.api
+      .sendMessage(
+        GROUP_CHAT_ID,
+        kb
+          ? "Pick a project to launch a Claude Code session for:"
+          : "No known projects yet — start a session from the machine once, and its project appears here.",
+        { ...thread, reply_markup: kb },
+      )
+      .catch(() => {});
+    return true;
+  }
+  return false;
+}
+
 function initBot(): void {
   bot = new Bot(BOT_TOKEN);
+  // Flood control (429 + retry_after) and transient 5xx/network failures are
+  // retried inside the API layer — see tgretry.ts.
+  bot.api.config.use(apiRetry());
   botRunning = true;
 
   bot.on("message", async (ctx) => {
@@ -165,7 +326,14 @@ function initBot(): void {
     if (m.from?.is_bot) return;
     if (!isAllowedUser(m.from?.id)) return;
     const topicId = m.message_thread_id;
+    // Leader-answered commands work everywhere, including the General topic.
+    // Only a BARE command is intercepted; "/status of the deploy" falls
+    // through to normal delivery instead of being silently swallowed.
+    if (m.text && /^\/(status|start)(@\w+)?$/.test(m.text.trim())) {
+      if (await handleCommand(m.text.trim(), topicId)) return;
+    }
     if (topicId === undefined) return; // General topic / non-topic messages ignored
+    trackInbound(m.message_id, topicId);
 
     const from = m.from?.username ?? String(m.from?.id ?? "user");
     let text = m.text ?? m.caption ?? "";
@@ -198,6 +366,8 @@ function initBot(): void {
     log("inbound.message", { mid: m.message_id, topic: topicId, owner: owner ?? "fan" });
     if (owner) deliverToSession(owner, inbound);
     else deliver(topicId, inbound);
+    // Acknowledge routed delivery; the no-session case posts its own notice.
+    if (owner || (topicSessions.get(topicId)?.size ?? 0) > 0) signalTyping(topicId);
   });
 
   bot.on("callback_query", async (ctx) => {
@@ -214,6 +384,35 @@ function initBot(): void {
         parsed.sessionId,
         parsed.requestId,
       );
+      return;
+    }
+
+    // "Start a session" buttons (the /start picker and no-session notices) are
+    // leader-handled: there may be no session to deliver to by definition.
+    if (parsed.kind === "start") {
+      if (!msg || !inGroup(msg.chat.id) || !isAllowedUser(cb.from?.id)) {
+        await ctx.answerCallbackQuery({ text: "Not authorized." }).catch(() => {});
+        return;
+      }
+      const project = projectForTopic(parsed.topicId);
+      if (!project) {
+        await ctx.answerCallbackQuery({ text: "Unknown project." }).catch(() => {});
+        return;
+      }
+      const live = topicSessions.get(parsed.topicId)?.size ?? 0;
+      if (live > 0) {
+        await ctx
+          .answerCallbackQuery({ text: `Already running (${live} session(s) live).` })
+          .catch(() => {});
+        return;
+      }
+      const err = spawnSession(project, topicName(project));
+      log("session.start.tap", { project, error: err ?? "" });
+      await ctx
+        .answerCallbackQuery({
+          text: err ? `⚠️ ${truncate(err, 180)}` : "🚀 Launching — it registers within ~30 s.",
+        })
+        .catch(() => {});
       return;
     }
 
@@ -317,6 +516,8 @@ function ownerSession(messageId: number): string | undefined {
 // sessionId:requestId so a request id can't collide across concurrent projects.
 type PendingPermission = {
   sessionId: string;
+  requestId: string;
+  messageId: number; // the Telegram message carrying the buttons
   toolName: string;
   description: string;
   inputPreview: string;
@@ -325,6 +526,25 @@ type PendingPermission = {
 const pendingPermissions = new Map<string, PendingPermission>();
 const permKey = (sessionId: string, requestId: string): string =>
   `${sessionId}:${requestId}`;
+
+// The posted buttons embed the ASK-TIME session id; if the session
+// re-registered meanwhile (any poll hiccup), the exact key misses. Fall back
+// to the tapped message's id — unique per prompt — NOT a bare requestId scan,
+// which could match a same-id request in a different project's topic and
+// approve the wrong tool call.
+function findPendingPermission(
+  sessionId: string,
+  requestId: string,
+  messageId: number,
+): { key: string; pending: PendingPermission } | undefined {
+  const exact = permKey(sessionId, requestId);
+  const hit = pendingPermissions.get(exact);
+  if (hit) return { key: exact, pending: hit };
+  for (const [key, pending] of pendingPermissions) {
+    if (pending.messageId === messageId) return { key, pending };
+  }
+  return undefined;
+}
 
 async function handlePermissionCallback(
   ctx: Context,
@@ -337,14 +557,17 @@ async function handlePermissionCallback(
     await ctx.answerCallbackQuery({ text: "Not authorized." }).catch(() => {});
     return;
   }
-  const key = permKey(sessionId, requestId);
-  const pending = pendingPermissions.get(key);
-  if (!pending) {
+  const found = findPendingPermission(sessionId, requestId, msg.message_id);
+  if (!found) {
     await ctx
       .answerCallbackQuery({ text: "Request no longer available." })
       .catch(() => {});
     return;
   }
+  const { key, pending } = found;
+  // Route by the entry's CURRENT owner (prev-migration keeps it live), not the
+  // stale sid baked into the tapped button.
+  const owner = pending.sessionId;
 
   if (behavior === "more") {
     let prettyInput: string;
@@ -363,8 +586,8 @@ async function handlePermissionCallback(
         reply_markup: {
           inline_keyboard: [
             [
-              { text: "✅ Allow", callback_data: permCallbackData("allow", sessionId, requestId) },
-              { text: "❌ Deny", callback_data: permCallbackData("deny", sessionId, requestId) },
+              { text: "✅ Allow", callback_data: permCallbackData("allow", owner, pending.requestId) },
+              { text: "❌ Deny", callback_data: permCallbackData("deny", owner, pending.requestId) },
             ],
           ],
         },
@@ -375,12 +598,29 @@ async function handlePermissionCallback(
   }
 
   // allow / deny → delete first so a double-tap can't fire twice, then hand the
-  // decision to the owning session.
+  // decision to the owning session — its CURRENT id (prev-migration keeps the
+  // pending entry pointed at the live session), not the ask-time id baked into
+  // the button.
   pendingPermissions.delete(key);
-  log("permission.decision", { sid: sessionId, behavior, requestId });
-  deliverToSession(sessionId, {
+  if (!sessions.has(owner)) {
+    // Never confirm a decision that went nowhere: the old code answered
+    // "✅ Allowed" while deliverToSession dropped it and the terminal prompt
+    // sat unanswered — a silent false success.
+    log("permission.orphan", { sid: owner, behavior, requestId: pending.requestId });
+    await ctx
+      .answerCallbackQuery({ text: "⚠️ Session is gone — answer the prompt in the terminal." })
+      .catch(() => {});
+    if ("text" in msg && msg.text) {
+      await ctx
+        .editMessageText(`${msg.text}\n\n⚠️ Session gone — not delivered`)
+        .catch(() => {});
+    }
+    return;
+  }
+  log("permission.decision", { sid: owner, behavior, requestId: pending.requestId });
+  deliverToSession(owner, {
     type: "permission",
-    requestId,
+    requestId: pending.requestId,
     behavior,
     messageId: msg.message_id,
     ts: Date.now(),
@@ -434,39 +674,49 @@ async function withRecovery<T>(
 async function sendText(s: Session, text: string, options?: string[]): Promise<number> {
   const outText =
     sessionPrefix(s.label, topicSessions.get(s.topicId)?.size ?? 1) + text;
-  const msgId = await withRecovery(s, async (topicId) => {
-    const reply_markup = options?.length
-      ? { inline_keyboard: options.map((o, i) => [{ text: o, callback_data: String(i) }]) }
-      : undefined;
-    try {
-      const sent = await bot.api.sendMessage(GROUP_CHAT_ID, outText, {
-        message_thread_id: topicId,
-        parse_mode: "Markdown",
-        reply_markup,
-      });
-      return sent.message_id;
-    } catch (e) {
-      // Markdown that Telegram can't parse — retry as plain text.
-      if (
-        e instanceof GrammyError &&
-        e.error_code === 400 &&
-        /can't parse/i.test(e.description)
-      ) {
-        const sent = await bot.api.sendMessage(GROUP_CHAT_ID, outText, {
+  // Markdown is converted to explicit entities (never parse_mode): intra-word
+  // underscores stay literal (`aaa_bbb_ccc` no longer renders "aaabbbccc" with
+  // an italic middle) and malformed markup degrades to plain text instead of a
+  // Telegram 400. Oversized messages are split at line boundaries — Telegram
+  // rejects >4096 outright.
+  const formatted = mdToTelegram(outText);
+  const chunks = splitTelegram(formatted.text, formatted.entities);
+  const ids: number[] = [];
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i]!;
+    const last = i === chunks.length - 1;
+    const reply_markup =
+      last && options?.length
+        ? { inline_keyboard: options.map((o, j) => [{ text: o, callback_data: String(j) }]) }
+        : undefined;
+    const msgId = await withRecovery(s, async (topicId) => {
+      try {
+        const sent = await bot.api.sendMessage(GROUP_CHAT_ID, chunk.text, {
           message_thread_id: topicId,
+          entities: chunk.entities,
           reply_markup,
         });
         return sent.message_id;
+      } catch (e) {
+        // Entities Telegram rejects (defensive) — deliver unformatted.
+        if (e instanceof GrammyError && e.error_code === 400 && chunk.entities) {
+          const sent = await bot.api.sendMessage(GROUP_CHAT_ID, chunk.text, {
+            message_thread_id: topicId,
+            reply_markup,
+          });
+          return sent.message_id;
+        }
+        throw e;
       }
-      throw e;
-    }
-  });
-  trackSent(msgId, {
-    topicId: s.topicId,
-    sessionId: s.id,
-    options: options?.length ? options : undefined,
-  });
-  return msgId;
+    });
+    trackSent(msgId, {
+      topicId: s.topicId,
+      sessionId: s.id,
+      options: last && options?.length ? options : undefined,
+    });
+    ids.push(msgId);
+  }
+  return ids[ids.length - 1]!;
 }
 
 const PHOTO_EXT = new Set([".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"]);
@@ -555,6 +805,23 @@ async function handle(req: Request): Promise<Response> {
         sessions.delete(prev);
       }
       remapSentSessions(prev, id);
+      // Pending permission prompts follow the re-registered session too — the
+      // posted buttons carry the old sid, but the entry now names the live one
+      // (findPendingPermission bridges the old callback_data to it).
+      for (const [key, pending] of [...pendingPermissions]) {
+        if (pending.sessionId === prev) {
+          pendingPermissions.delete(key);
+          pending.sessionId = id;
+          pendingPermissions.set(permKey(id, pending.requestId), pending);
+        }
+      }
+    }
+    // Messages that arrived while this project had no session at all.
+    const held = heldInbox.get(project);
+    if (held) {
+      heldInbox.delete(project);
+      fresh.queue.push(...held.msgs);
+      log("held.drained", { sid: id, project, count: held.msgs.length });
     }
     // A registration keyed to the config dir is almost always the process.cwd()
     // fallback (identity race), not a real project — the client self-heals by
@@ -595,10 +862,15 @@ async function handle(req: Request): Promise<Response> {
       return json({ messageId: id });
     }
     if (path === "/react") {
-      // Only react to a message we sent into this session's topic.
+      // Reactable: a message we sent into this topic, or a recent inbound
+      // (user) message here — the natural "seen 👍" acknowledgement.
       const messageId = Number(body.messageId);
-      if (topicForSentMessage(messageId) !== s.topicId) {
-        return json({ error: "message not in this session's topic" }, 403);
+      const topic = topicForSentMessage(messageId) ?? inboundTopic.get(messageId);
+      if (topic !== s.topicId) {
+        return json(
+          { error: "can only react to a recent message in this session's topic" },
+          403,
+        );
       }
       await bot.api.setMessageReaction(GROUP_CHAT_ID, messageId, [
         { type: "emoji", emoji: String(body.emoji) as never },
@@ -610,7 +882,33 @@ async function handle(req: Request): Promise<Response> {
       if (topicForSentMessage(messageId) !== s.topicId) {
         return json({ error: "message not in this session's topic" }, 403);
       }
-      await bot.api.editMessageText(GROUP_CHAT_ID, messageId, String(body.text));
+      // Same formatting pipeline as /send. An edit is a single message, so
+      // text over the 4096 limit is truncated to the first chunk (the rest
+      // would need new messages, defeating "edit in place"); the split keeps
+      // entity offsets valid at the cut. Telegram drops an existing inline
+      // keyboard on editMessageText unless re-sent — re-attach unconsumed
+      // options so editing a pending question keeps its buttons.
+      const formatted = mdToTelegram(String(body.text));
+      const [head] = splitTelegram(formatted.text, formatted.entities);
+      const opts = peekOptions(messageId);
+      const reply_markup = opts?.length
+        ? { inline_keyboard: opts.map((o, i) => [{ text: o, callback_data: String(i) }]) }
+        : undefined;
+      try {
+        await bot.api.editMessageText(GROUP_CHAT_ID, messageId, head!.text, {
+          entities: head!.entities,
+          reply_markup,
+        });
+      } catch (e) {
+        if (e instanceof GrammyError && e.error_code === 400 && /not modified/i.test(e.description)) {
+          // Editing to identical content is a no-op, not a failure.
+        } else if (e instanceof GrammyError && e.error_code === 400 && head!.entities) {
+          // Entities Telegram rejects — retry unformatted.
+          await bot.api.editMessageText(GROUP_CHAT_ID, messageId, head!.text, { reply_markup });
+        } else {
+          throw e;
+        }
+      }
       return json({ ok: true });
     }
     if (path === "/permissionAsk") {
@@ -647,6 +945,8 @@ async function handle(req: Request): Promise<Response> {
       }
       pendingPermissions.set(permKey(s.id, requestId), {
         sessionId: s.id,
+        requestId,
+        messageId: sentId,
         toolName,
         description,
         inputPreview,
@@ -715,10 +1015,26 @@ function scheduleStepDown(newerVersion: string): void {
   setTimeout(async () => {
     if (botRunning) {
       botRunning = false;
-      await bot.stop().catch(() => {});
+      // A wedged getUpdates abort must not hold the port hostage forever —
+      // the successor is bind-looping for only ~10s.
+      await Promise.race([
+        bot.stop().catch(() => {}),
+        new Promise((r) => setTimeout(r, 5000)),
+      ]);
     }
     stopLeader();
   }, 250);
+}
+
+// After the poller dies (409: another consumer on the token; 401: token
+// revoked) an immediate re-election in the same process just re-runs the same
+// failure — an endless elect→die cycle burning CPU, disk flushes and API
+// quota. The cooldown spaces the attempts; a DIFFERENT healthy process is
+// unaffected and can still take the port at once.
+let electionCooldownUntil = 0;
+
+function pollerDeathCooldownMs(error: string): number {
+  return /\b(409|401)\b/.test(error) ? 60_000 : 10_000;
 }
 
 /**
@@ -727,6 +1043,7 @@ function scheduleStepDown(newerVersion: string): void {
  * (another leader already exists — caller should act as a follower).
  */
 export async function tryBecomeLeader(): Promise<boolean> {
+  if (Date.now() < electionCooldownUntil) return false;
   try {
     bunServer = Bun.serve({
       hostname: "127.0.0.1",
@@ -767,9 +1084,11 @@ export async function tryBecomeLeader(): Promise<boolean> {
       // re-elect, so inbound would be dead forever. Relinquish leadership so the
       // next control request re-elects a fresh leader (this process or another).
       botRunning = false;
-      log("poller.died", { error: String(e) });
+      const cooldownMs = pollerDeathCooldownMs(String(e));
+      electionCooldownUntil = Date.now() + cooldownMs;
+      log("poller.died", { error: String(e), cooldownMs });
       process.stderr.write(
-        `telegram-topics leader: poller died, relinquishing leadership: ${e}\n`,
+        `telegram-topics leader: poller died, relinquishing leadership (re-election cooldown ${cooldownMs}ms): ${e}\n`,
       );
       stopLeader();
     });
@@ -784,6 +1103,24 @@ export async function tryBecomeLeader(): Promise<boolean> {
         log("session.reaped", { sid: id });
       }
     }
+    for (const [project, held] of heldInbox) {
+      if (now - held.at > HELD_TTL_MS) {
+        heldInbox.delete(project);
+        log("held.expired", { project, count: held.msgs.length });
+        // Tell the user their queued messages timed out — a broken "queued"
+        // promise is worse than an honest "please resend".
+        const tid = projectTopicId(project);
+        if (tid !== undefined) {
+          void bot.api
+            .sendMessage(
+              GROUP_CHAT_ID,
+              `⌛ ${held.msgs.length} queued message(s) expired without a session — resend when one is running.`,
+              { message_thread_id: tid },
+            )
+            .catch(() => {});
+        }
+      }
+    }
     try {
       for (const name of readdirSync(INBOX_DIR)) {
         const fp = join(INBOX_DIR, name);
@@ -795,6 +1132,7 @@ export async function tryBecomeLeader(): Promise<boolean> {
   }, 300_000);
 
   steppingDown = false;
+  leaderSince = Date.now();
   log("leader.up", { pid: process.pid, port: CONTROL_PORT, version: VERSION });
   process.stderr.write(`telegram-topics: leader up on 127.0.0.1:${CONTROL_PORT}\n`);
   return true;

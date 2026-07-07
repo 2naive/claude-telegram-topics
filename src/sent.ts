@@ -142,6 +142,12 @@ export function sessionForSentMessage(messageId: number): string | undefined {
   return sent.get(messageId)?.sessionId;
 }
 
+/** Read a message's button labels WITHOUT consuming them — used by /edit to
+ * re-attach an unanswered keyboard (Telegram drops it on editMessageText). */
+export function peekOptions(messageId: number): string[] | undefined {
+  return sent.get(messageId)?.options;
+}
+
 /** Read a message's button labels and consume them, so an already-answered
  * keyboard stays consumed across a later hand-off. */
 export function takeOptions(messageId: number): string[] | undefined {

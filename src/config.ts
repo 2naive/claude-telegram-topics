@@ -28,16 +28,31 @@ export const SENT_FILE = join(STATE_DIR, "sent.json");
 
 mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
 
-// Load .env without a dependency: KEY=VALUE lines, # comments, shell wins.
-if (existsSync(ENV_FILE)) {
-  for (const raw of readFileSync(ENV_FILE, "utf8").split(/\r?\n/)) {
+/** Parse .env text: KEY=VALUE lines, # comments, CRLF tolerated. Pure. */
+export function parseEnvFile(text: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const raw of text.split(/\r?\n/)) {
     const line = raw.trim();
     if (!line || line.startsWith("#")) continue;
     const eq = line.indexOf("=");
     if (eq < 0) continue;
     const key = line.slice(0, eq).trim();
-    const val = line.slice(eq + 1).trim();
-    if (key && !(key in process.env)) process.env[key] = val;
+    if (key) out[key] = line.slice(eq + 1).trim();
+  }
+  return out;
+}
+
+// Which keys the shell provided BEFORE the .env merge — those keep winning for
+// the lifetime of the process (including live re-reads like the allowlist).
+const shellKeys = new Set(Object.keys(process.env));
+export function envFromShell(key: string): boolean {
+  return shellKeys.has(key);
+}
+
+// Load .env without a dependency; shell wins over file values.
+if (existsSync(ENV_FILE)) {
+  for (const [key, val] of Object.entries(parseEnvFile(readFileSync(ENV_FILE, "utf8")))) {
+    if (!(key in process.env)) process.env[key] = val;
   }
 }
 
@@ -53,6 +68,9 @@ export const CONTROL_PORT = Number(process.env.TG_TOPICS_PORT ?? "8787");
 
 // Comma-separated numeric user ids allowed to drive sessions. Empty = allow any
 // member of the group (relies on the group's own membership as the boundary).
+// This is the import-time snapshot; enforcement uses the live re-reading
+// currentAllowlist() in access.ts so an /access edit applies within its TTL,
+// not only when leadership changes.
 export const ALLOWED_USER_IDS = new Set(
   (process.env.TELEGRAM_ALLOWED_USER_IDS ?? "")
     .split(",")

@@ -39,6 +39,8 @@ Users get their numeric id from [@userinfobot](https://t.me/userinfobot).
 - **`open`** — clear `TELEGRAM_ALLOWED_USER_IDS` (allow any group member). Warn
   that this is fail-open.
 
-The allowlist is read when the leader process starts, so a change takes effect
-for **new** sessions (the next time a session becomes the leader). Never print or
-modify the bot token here; that is `/telegram-topics:configure`.
+The running leader re-reads the allowlist within ~15 seconds, so a change —
+including a **revocation** — applies to live sessions without any restart.
+(Exception: if `TELEGRAM_ALLOWED_USER_IDS` is exported in the shell environment,
+that value takes precedence and is pinned until the leader process restarts.)
+Never print or modify the bot token here; that is `/telegram-topics:configure`.

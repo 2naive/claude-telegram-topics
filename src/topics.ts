@@ -76,17 +76,32 @@ async function createTopic(api: Api, name: string): Promise<number> {
 // so registering the promise before the first await makes this a real lock.
 const inFlight = new Map<string, Promise<number>>();
 
+// After a failed create (e.g. the bot lost Manage Topics), refuse retries for
+// a window instead of hammering createForumTopic on every registration retry —
+// the register loop runs at sub-second cadence and each failure is a live
+// Telegram API call (reproduced: ~4 calls/sec indefinitely).
+const CREATE_RETRY_COOLDOWN_MS = 30_000;
+const failedUntil = new Map<string, number>();
+
 function createOnce(api: Api, key: string, name: string): Promise<number> {
   const pending = inFlight.get(key);
   if (pending) return pending;
+  const blockedUntil = failedUntil.get(key) ?? 0;
+  if (Date.now() < blockedUntil) {
+    return Promise.reject(
+      new Error(`topic create for "${name}" failed recently; retrying after cooldown`),
+    );
+  }
   const p = (async () => {
     const topicId = await createTopic(api, name);
+    failedUntil.delete(key);
     map[key] = { topicId, name, createdAt: Date.now() };
     persist();
     log("topic.created", { key, name, topicId });
     return topicId;
   })();
   inFlight.set(key, p);
+  p.catch(() => failedUntil.set(key, Date.now() + CREATE_RETRY_COOLDOWN_MS));
   // Clear on both success and failure so a failed create can be retried.
   return p.finally(() => inFlight.delete(key));
 }
@@ -106,8 +121,10 @@ export async function resolveTopic(
 export async function recreateTopic(api: Api, key: string): Promise<number> {
   const name = map[key]?.name ?? key;
   log("topic.recreate", { key, name });
-  // Drop the stale record first so createOnce always makes a fresh topic.
-  delete map[key];
+  // The stale record is replaced only AFTER the create succeeds (createOnce
+  // overwrites map[key]). Deleting it first meant a failed recreate erased the
+  // mapping, and every later /register took the failing create path — the
+  // registration-storm half of the no-backoff incident.
   return createOnce(api, key, name);
 }
 
@@ -117,6 +134,15 @@ export function projectForTopic(topicId: number): string | undefined {
     if (rec.topicId === topicId) return key;
   }
   return undefined;
+}
+
+/** Every bridged project key (drives the /start project picker). */
+export function knownProjects(): string[] {
+  return Object.keys(map);
+}
+
+export function projectTopicId(key: string): number | undefined {
+  return map[key]?.topicId;
 }
 
 export function topicName(key: string): string {

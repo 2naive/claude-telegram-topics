@@ -30,9 +30,11 @@ export type Callback =
       requestId: string;
     }
   | { kind: "choice"; index: number }
+  | { kind: "start"; topicId: number }
   | { kind: "raw"; data: string };
 
 const PERM_RE = /^perm:(allow|deny|more):([^:]+):(.+)$/;
+const START_RE = /^start:(\d+)$/;
 
 /** Classify an inline-button callback_data payload. */
 export function parseCallback(data: string): Callback {
@@ -45,8 +47,15 @@ export function parseCallback(data: string): Callback {
       requestId: perm[3]!,
     };
   }
+  const start = START_RE.exec(data);
+  if (start) return { kind: "start", topicId: Number(start[1]) };
   if (/^\d+$/.test(data)) return { kind: "choice", index: Number(data) };
   return { kind: "raw", data };
+}
+
+/** callback_data for a "launch a session for this project" button. */
+export function startCallbackData(topicId: number): string {
+  return `start:${topicId}`;
 }
 
 /** Build the callback_data for a permission button (index-free, always short). */

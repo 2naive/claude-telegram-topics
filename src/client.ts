@@ -29,11 +29,61 @@ let lastSessionId: string | null = null;
 let topicId: number | null = null;
 let leaderStarted = false;
 
+// What is actually listening on the control port after a lost election:
+// a real leader (/health answers with our shape), a foreign program squatting
+// the port (8787 is also wrangler dev's default — without this check the
+// client would happily POST /register to it and surface only a baffling
+// "registration failed: HTTP 404"), or nothing (leader died mid-probe). A 200
+// with a non-JSON/unexpected body is still a foreign server, not "dead" — only
+// a failed request (connection refused / abort) means nothing is listening.
+async function probeLeader(): Promise<"leader" | "foreign" | "dead"> {
+  let resp: Response;
+  try {
+    resp = await fetch(`${BASE}/health`, { signal: AbortSignal.timeout(3000) });
+  } catch {
+    return "dead";
+  }
+  if (!resp.ok) return "foreign";
+  try {
+    const body = (await resp.json()) as { ok?: boolean; version?: string };
+    return body?.ok === true && typeof body.version === "string" ? "leader" : "foreign";
+  } catch {
+    return "foreign";
+  }
+}
+
 async function ensureLeaderExists(): Promise<void> {
   // Returns once *a* leader is reachable (this process or another). Binding the
-  // port is the election; failing to bind means someone else already leads.
-  await tryBecomeLeader();
-  leaderStarted = true;
+  // port is the election; failing to bind means someone else already leads —
+  // unless the port is held by an unrelated program, which must be named
+  // instead of silently failing every later call. leaderStarted is set ONLY on
+  // a confirmed leader (ours or another's): latching it after a give-up would
+  // stop the retry loop from ever re-running the election, so a solo session
+  // whose poller died (409/401) could never recover (it sits in its own
+  // re-election cooldown; the loop must keep re-entering here until the
+  // cooldown lapses and the bind succeeds).
+  for (let i = 0; i < 3; i++) {
+    if (await tryBecomeLeader()) {
+      leaderStarted = true;
+      return;
+    }
+    const holder = await probeLeader();
+    if (holder === "leader") {
+      leaderStarted = true;
+      return;
+    }
+    if (holder === "foreign") {
+      throw new Error(
+        `telegram-topics: port ${CONTROL_PORT} is held by another program — ` +
+          `set TG_TOPICS_PORT to a free port (for ALL sessions) in the channel .env`,
+      );
+    }
+    // "dead": nobody is leading right now (previous leader releasing the port,
+    // or this process is in its own post-poller-death cooldown). Pause and let
+    // the caller retry — do NOT latch leaderStarted.
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  throw new Error("telegram-topics: no leader could be elected (retrying)");
 }
 
 // The startup identity wait runs at most once per process: re-registrations
@@ -166,7 +216,18 @@ export async function ensureRegistered(): Promise<void> {
   if (registering) return registering;
   registering = (async () => {
     if (!leaderStarted) await ensureLeaderExists();
-    await register();
+    try {
+      await register();
+    } catch (e) {
+      // A register that fails at the connection level means the leader we
+      // elected is already gone (it died between the election and this call —
+      // e.g. its poller hit 409 and it relinquished). Drop the latch so the
+      // next retry re-runs the election instead of hammering a dead port
+      // forever — the bug that left a solo session's inbound permanently dead
+      // after a poller death.
+      leaderStarted = false;
+      throw e;
+    }
   })().finally(() => {
     registering = null;
   });

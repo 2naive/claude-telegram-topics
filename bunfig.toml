@@ -1,0 +1,5 @@
+[test]
+# Loaded before ANY test file: pins the state dir, control port and Telegram
+# credentials to hermetic values so the suite can never touch the live channel
+# (~/.claude/channels/telegram-topics) or a live leader on the real port.
+preload = ["./test/preload.ts"]
