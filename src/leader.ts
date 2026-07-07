@@ -33,6 +33,7 @@ import {
   permCallbackData,
   sessionPrefix,
   truncate,
+  CONTROL_RESPONSE_HEADERS,
   LEADER_IDLE_TIMEOUT_SEC,
   POLL_MAX_SEC,
 } from "./routing.ts";
@@ -488,9 +489,11 @@ async function sendFile(s: Session, path: string, caption: string): Promise<numb
 // --- Control API (loopback only) ---
 
 function json(data: unknown, status = 200): Response {
+  // Closes the connection per response — see CONTROL_RESPONSE_HEADERS for why
+  // a pooled keep-alive socket must never survive a served request here.
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: CONTROL_RESPONSE_HEADERS,
   });
 }
 

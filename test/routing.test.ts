@@ -181,4 +181,14 @@ describe("long-poll invariants", () => {
     const { LEADER_IDLE_TIMEOUT_SEC, POLL_MAX_SEC } = await import("../src/routing.ts");
     expect(LEADER_IDLE_TIMEOUT_SEC).toBeGreaterThanOrEqual(POLL_MAX_SEC + 5);
   });
+
+  test("control API responses close their connection", async () => {
+    // Regression pin for the demoted-leader black hole: a pooled keep-alive
+    // /poll connection survives graceful stop AND the delayed force-close, so
+    // a stepped-down leader with no successor serves it forever and inbound
+    // dies silently. Per-response close guarantees the next poll is a fresh
+    // connect that surfaces leader death as ECONNREFUSED.
+    const { CONTROL_RESPONSE_HEADERS } = await import("../src/routing.ts");
+    expect(CONTROL_RESPONSE_HEADERS.connection).toBe("close");
+  });
 });

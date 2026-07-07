@@ -231,8 +231,10 @@ itself a tell.
 
 - Per-message routing state (reaction topics, reply ownership, button labels)
   is persisted (`sent.json`) and survives leader hand-offs from 0.7.0 on; a
-  not-yet-answered `🔐 Permission` prompt still dies with its leader, and
-  there is a brief window before a follower re-elects.
+  not-yet-answered `🔐 Permission` prompt still dies with its leader. From
+  0.7.1 control responses close their connection, so a dead (or demoted)
+  leader is detected on the next poll and re-election is bounded by one poll
+  cycle (~30 s).
 - One forum group per machine (all projects share it, one topic each).
 - Outbound, inbound streaming, choice buttons, reply routing, and reactions
   are live-tested. The tool-approval relay is implemented to Claude Code's

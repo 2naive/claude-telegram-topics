@@ -9,6 +9,19 @@
 export const POLL_MAX_SEC = 30;
 export const LEADER_IDLE_TIMEOUT_SEC = 40;
 
+// Every control API response closes its connection. A pooled keep-alive
+// connection outlives both a graceful stop and the delayed force-close
+// (reproduced live on Bun 1.3.12): a back-to-back /poll loop never idles, so a
+// demoted leader keeps serving it forever and inbound black-holes until some
+// other call happens to open a fresh socket. Per-response close makes every
+// request a fresh connect, so leader death surfaces as ECONNREFUSED within one
+// poll cycle and the client re-elects. Loopback reconnects at this call rate
+// cost nothing. The invariant test pins the header.
+export const CONTROL_RESPONSE_HEADERS: Record<string, string> = {
+  "content-type": "application/json",
+  connection: "close",
+};
+
 export type Callback =
   | {
       kind: "permission";
