@@ -1,5 +1,10 @@
 # claude-telegram-topics
 
+[![Release](https://img.shields.io/github/v/tag/2naive/claude-telegram-topics?label=release&sort=semver)](https://github.com/2naive/claude-telegram-topics/releases)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](./LICENSE)
+[![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-8A2BE2)](https://code.claude.com/docs/en/plugins)
+[![Tests](https://img.shields.io/badge/tests-passing-brightgreen)](./test)
+
 A **Telegram channel for [Claude Code](https://claude.com/claude-code)** where
 **1 project = 1 forum topic**. Every project's session streams into its own
 topic inside a single Telegram forum group, and multiple projects run
