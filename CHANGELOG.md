@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.8.1 — 2026-07-08
+
+Formatting fidelity (second fuzz pass on the entity converter):
+
+- **Windows paths survive verbatim**: `C:\Users\_naive_\App_Data` no longer
+  loses its backslash — `\_` is treated as a literal path, not a markdown
+  escape, and a `_` opens emphasis only after a real boundary (start,
+  whitespace, opening bracket/quote), never after `\` or a word char.
+- **Non-ASCII fenced languages**: ` ```питон ` (any non-ASCII info-string) now
+  fences instead of leaking backtick markers.
+- **Stacked delimiters nest fully**: `**_bold italic_**` and
+  `~~**_all three_**~~` emit the full set of overlapping entities with no
+  leftover `*`/`_`/`~` in the text.
+
 ## 0.8.0 — 2026-07-08
 
 Features:

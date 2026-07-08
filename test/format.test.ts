@@ -116,6 +116,127 @@ describe("mdToTelegram", () => {
     // Either literal or bold-without-backslash, but never "foo\\" as bold text.
     if (r.entities) expect(r.text).not.toMatch(/\\/);
   });
+
+  test("nested emphasis: bold containing italic yields both entities, no leftover markers", () => {
+    const r = mdToTelegram("**жирный с *курсивом* внутри**");
+    expect(r.text).toBe("жирный с курсивом внутри");
+    const types = (r.entities ?? []).map((e) => e.type).sort();
+    expect(types).toEqual(["bold", "italic"]);
+    const bold = r.entities!.find((e) => e.type === "bold")!;
+    const italic = r.entities!.find((e) => e.type === "italic")!;
+    // The italic run sits inside the bold run.
+    expect(bold.offset).toBe(0);
+    expect(bold.length).toBe(24);
+    expect(italic.offset).toBeGreaterThanOrEqual(bold.offset);
+    expect(italic.offset + italic.length).toBeLessThanOrEqual(bold.offset + bold.length);
+  });
+
+  test("emphasis spans a soft line break", () => {
+    const r = mdToTelegram("Многострочный **bold\nчерез строку** дальше");
+    expect(r.text).toBe("Многострочный bold\nчерез строку дальше");
+    expect(r.entities).toEqual([{ type: "bold", offset: 14, length: 17 }]);
+  });
+
+  test("Python power operator stays literal (2 ** 3 ** 4)", () => {
+    for (const src of ["2 ** 3 ** 4", "a ~~ b ~~ c", "x ** y"]) {
+      const r = mdToTelegram(src);
+      expect(r.text).toBe(src);
+      expect(r.entities).toBeUndefined();
+    }
+  });
+
+  test("three bold runs in a row each format independently", () => {
+    const r = mdToTelegram("**a** **b** **c**");
+    expect(r.text).toBe("a b c");
+    expect((r.entities ?? []).filter((e) => e.type === "bold").length).toBe(3);
+  });
+
+  // Regressions from the adversarial fuzz pass — code-shaped text must survive.
+  test("math, globs, pointers and selectors stay literal", () => {
+    for (const src of [
+      "x**2 + y**2 = z**2",
+      "Compute 2**3**4 tower",
+      "cleanup: rm *.log,*.tmp,*.bak",
+      "webpack **/dist/** and **/build/**",
+      "ignore **/*.js and **/*.ts",
+      "C expr (*a)*(*b)",
+      "JSONPath a[*].b[*].c[*]",
+    ]) {
+      const r = mdToTelegram(src);
+      expect(r.text).toBe(src);
+      expect(r.entities).toBeUndefined();
+    }
+  });
+
+  test("a trailing colon inside bold still bolds (**Заголовок:**)", () => {
+    const r = mdToTelegram("**Заголовок:** текст");
+    expect(r.text).toBe("Заголовок: текст");
+    expect(r.entities).toEqual([{ type: "bold", offset: 0, length: 10 }]);
+  });
+
+  test("CRLF line endings do not leak fence/heading markers", () => {
+    expect(mdToTelegram("```bash\r\nls -la *.log\r\n```").text).toBe("ls -la *.log");
+    const h = mdToTelegram("# Report\r\ntext");
+    expect(h.text).toBe("Report\ntext");
+    expect(h.entities).toEqual([{ type: "bold", offset: 0, length: 6 }]);
+  });
+
+  // Regressions from the second fuzz pass — paths, non-ASCII fences, stacking.
+  test("a Windows path with an underscore folder keeps every backslash", () => {
+    for (const p of [
+      "Path C:\\Users\\_naive_\\App_Data\\config.ini",
+      "open C:\\_temp\\log_2026.txt now",
+      "Смотри C:\\Users\\naive\\.claude\\settings.json там",
+    ]) {
+      const r = mdToTelegram(p);
+      expect(r.text).toBe(p);
+      expect(r.entities).toBeUndefined();
+    }
+  });
+
+  test("a fenced block with a non-ASCII language still fences", () => {
+    const r = mdToTelegram("```питон\nprint('привет')\n```");
+    expect(r.text).toBe("print('привет')");
+    expect(r.entities).toEqual([
+      { type: "pre", offset: 0, length: 15, language: "питон" },
+    ]);
+  });
+
+  test("stacked delimiters nest fully with no leftover markers", () => {
+    const combo = mdToTelegram("**_bolditalic_**");
+    expect(combo.text).toBe("bolditalic");
+    expect((combo.entities ?? []).map((e) => e.type).sort()).toEqual(["bold", "italic"]);
+
+    const triple = mdToTelegram("~~**_all three_**~~");
+    expect(triple.text).toBe("all three");
+    expect((triple.entities ?? []).map((e) => e.type).sort()).toEqual([
+      "bold",
+      "italic",
+      "strikethrough",
+    ]);
+  });
+
+  test("an empty-bodied link emits no zero-length entity", () => {
+    const r = mdToTelegram("[****](https://example.com) x");
+    expect((r.entities ?? []).every((e) => e.length > 0)).toBe(true);
+  });
+
+  test("all entity offsets/lengths stay within the text bounds", () => {
+    const samples = [
+      "**a *b* `c` [d](https://x.io/1)**",
+      "# H\n**b**\n- *i*\n```js\ncode\n```",
+      "**незакрытый *и вложенный",
+      "~~strike **bold inside** end~~",
+    ];
+    for (const s of samples) {
+      const r = mdToTelegram(s);
+      for (const e of r.entities ?? []) {
+        expect(e.offset).toBeGreaterThanOrEqual(0);
+        expect(e.length).toBeGreaterThan(0);
+        expect(e.offset + e.length).toBeLessThanOrEqual(r.text.length);
+      }
+    }
+  });
 });
 
 describe("splitTelegram entity cap and surrogate safety", () => {
