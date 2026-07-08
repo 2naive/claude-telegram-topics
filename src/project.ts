@@ -12,6 +12,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { normalizePath, displayName } from "./paths.ts";
+import { gitTopLevel } from "./projectkey.ts";
 import { pickSessionField, type SessionRecord } from "./routing.ts";
 import { CONFIG_DIR, SESSION_NAME_OVERRIDE } from "./config.ts";
 import { pidCandidates } from "./pids.ts";
@@ -155,18 +156,9 @@ let cachedRoot: string | null = null;
 /** The project's root path as reported by git (or the session cwd), un-normalized. */
 function rawProjectPath(): string {
   if (cachedRoot) return cachedRoot;
-  const cwd = baseCwd();
-  let root = cwd;
-  try {
-    const r = spawnSync("git", ["rev-parse", "--show-toplevel"], {
-      cwd,
-      encoding: "utf8",
-      timeout: 3000,
-    });
-    if (r.status === 0 && r.stdout.trim()) root = r.stdout.trim();
-  } catch {
-    // git not present or not a repo — keep the cwd
-  }
+  // gitTopLevel is the SAME resolver the activity hook uses (projectkey.ts), so
+  // keyFromCwd(sessionCwd) in a hook matches this session's projectKey().
+  const root = gitTopLevel(baseCwd());
   // Cache only once the identity is store-backed (see baseCwd) — recomputing
   // until then is cheap and self-heals the startup race.
   if (cachedCwd) cachedRoot = root;

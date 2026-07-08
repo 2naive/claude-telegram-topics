@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.9.0 — 2026-07-08
+
+Topic-name status badge now distinguishes **working** from **idle** — the
+0.8.2 badge showed 🟢 whenever a session existed, conflating "Claude is working"
+with "session sitting idle".
+
+- **Five shape-distinct states**, visible in the topic list: ⏳ working · 🟢
+  ready · 🔔 needs you (a permission prompt is waiting) · 📥 queued (messages
+  held, no session) · 💤 no session. `/status` gains a legend line.
+- **Working/idle via hooks** (the channel protocol carries no such signal): the
+  plugin ships `hooks/hooks.json` (auto-activates when the plugin is enabled) —
+  `UserPromptSubmit` + `PreToolUse` → working, `Stop` → idle. Each fires a
+  fire-and-forget `POST /activity` to the leader (300 ms timeout, always exits
+  0, never blocks a turn). The leader also sets working itself for Telegram
+  turns, so the badge is correct even if the hook doesn't fire for
+  channel-injected prompts. A 120 s working-TTL (re-armed by each `PreToolUse`
+  heartbeat) means a missed `Stop` degrades to 🟢, never a stuck ⏳.
+- **Shared identity** (`src/projectkey.ts` `keyFromCwd`): the hook computes the
+  exact project key the leader registers (`normalizePath ∘ git-top-level`), so
+  the two never diverge; a parity test pins it.
+- `🔔` needs-you is derived by the leader from a pending permission relay — no
+  hook needed. Precedence: attention > working > ready > queued > offline.
+- Upgrading from 0.8.2 strips the old 🟢/🟡/⚪ badges before re-tagging, so names
+  don't stack glyphs. Opt out entirely with `TG_TOPICS_STATUS_ICONS=0`.
+
 ## 0.8.2 — 2026-07-08
 
 Liveness & remote-launch improvements:

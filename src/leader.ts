@@ -42,6 +42,8 @@ import {
   startCallbackData,
   truncate,
   withStatusGlyph,
+  statusGlyph,
+  computeTopicStatus,
   type TopicStatus,
   CONTROL_RESPONSE_HEADERS,
   LEADER_IDLE_TIMEOUT_SEC,
@@ -183,7 +185,7 @@ function deliver(topicId: number, msg: Inbound): void {
     log("deliver.none", { topic: topicId, type: msg.type, held: !!project && msg.type === "message" });
     if (project && msg.type === "message") {
       holdInbound(project, msg);
-      refreshTopicStatus(project); // 🟡 queued, no session
+      refreshTopicStatus(project); // 📥 queued, no session
       void postNoSessionNotice(topicId, project);
     }
     return;
@@ -237,32 +239,99 @@ function stopTyping(topicId: number): void {
   typingUntil.delete(topicId);
 }
 
-// Coarse topic-name status badge (🟢 live / 🟡 queued / ⚪ idle) — the only
-// per-topic signal Telegram renders in the topic LIST. Opt out with
-// TG_TOPICS_STATUS_ICONS=0. Edited only on a real state change, so it costs one
-// editForumTopic per session start/stop — nowhere near a flood.
+// Topic-name status badge (⏳ working / 🟢 ready / 🔔 needs-you / 📥 queued /
+// 💤 no-session) — the only per-topic signal Telegram renders in the topic
+// LIST. Opt out with TG_TOPICS_STATUS_ICONS=0.
 const STATUS_ICONS = process.env.TG_TOPICS_STATUS_ICONS !== "0";
 const topicStatusNow = new Map<number, TopicStatus>();
 
+// Per-project working/idle, fed by the activity hook (UserPromptSubmit +
+// PreToolUse -> working, Stop -> idle) and by the leader itself for Telegram
+// turns. The channel protocol carries no such signal, so this is the only way
+// to tell "Claude is working" from "session idle". A working entry carries a
+// TTL re-armed by every PreToolUse heartbeat: if a Stop is ever missed (crash),
+// the badge falls back to 🟢 ready rather than a stuck ⏳ that lies.
+const ACTIVITY_TTL_MS = 120_000;
+const activity = new Map<string, { state: "working" | "idle"; until: number }>();
+const activityTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function activeWorking(project: string): boolean {
+  const a = activity.get(project);
+  return !!a && a.state === "working" && Date.now() < a.until;
+}
+
+function setActivity(project: string, state: "working" | "idle"): void {
+  const t = activityTimers.get(project);
+  if (t) {
+    clearTimeout(t);
+    activityTimers.delete(project);
+  }
+  if (state === "working") {
+    activity.set(project, { state: "working", until: Date.now() + ACTIVITY_TTL_MS });
+    // One-shot fallback: if no Stop and no further heartbeat arrives, expire to
+    // idle so the badge stops claiming "working".
+    const timer = setTimeout(() => {
+      activityTimers.delete(project);
+      if (activity.get(project)?.state === "working" && !activeWorking(project)) {
+        activity.set(project, { state: "idle", until: 0 });
+        refreshTopicStatus(project);
+      }
+    }, ACTIVITY_TTL_MS + 500);
+    timer.unref?.();
+    activityTimers.set(project, timer);
+  } else {
+    activity.set(project, { state: "idle", until: 0 });
+  }
+  refreshTopicStatus(project);
+}
+
+// A permission relay pending for any session on this project's topic → 🔔.
+function hasPendingPermission(project: string): boolean {
+  for (const p of pendingPermissions.values()) {
+    if (sessions.get(p.sessionId)?.project === project) return true;
+  }
+  return false;
+}
+
 function topicStatusOf(project: string): TopicStatus {
   const tid = projectTopicId(project);
-  if (tid !== undefined && (topicSessions.get(tid)?.size ?? 0) > 0) return "active";
-  if ((heldInbox.get(project)?.msgs.length ?? 0) > 0) return "queued";
-  return "idle";
+  const hasSession = tid !== undefined && (topicSessions.get(tid)?.size ?? 0) > 0;
+  return computeTopicStatus({
+    hasSession,
+    working: activeWorking(project),
+    queued: (heldInbox.get(project)?.msgs.length ?? 0) > 0,
+    attention: hasPendingPermission(project),
+  });
 }
+
+// editForumTopic is rate-limited, and a working↔ready flip happens every turn.
+// Debounce+coalesce per topic so a burst of transitions (or a quick micro-turn)
+// costs one edit carrying the LATEST state, never a flood.
+const STATUS_DEBOUNCE_MS = 600;
+const statusTimers = new Map<number, ReturnType<typeof setTimeout>>();
+const statusTarget = new Map<number, TopicStatus>();
 
 function refreshTopicStatus(project: string): void {
   if (!STATUS_ICONS) return;
   const topicId = projectTopicId(project);
   if (topicId === undefined) return;
   const status = topicStatusOf(project);
-  if (topicStatusNow.get(topicId) === status) return;
-  topicStatusNow.set(topicId, status);
-  void bot.api
-    .editForumTopic(GROUP_CHAT_ID, topicId, {
-      name: withStatusGlyph(topicName(project), status),
-    })
-    .catch(() => {});
+  statusTarget.set(topicId, status);
+  if (topicStatusNow.get(topicId) === status && !statusTimers.has(topicId)) return;
+  if (statusTimers.has(topicId)) return; // a debounced edit is pending; it reads the latest target
+  const timer = setTimeout(() => {
+    statusTimers.delete(topicId);
+    const want = statusTarget.get(topicId);
+    if (want === undefined || topicStatusNow.get(topicId) === want) return;
+    topicStatusNow.set(topicId, want);
+    void bot.api
+      .editForumTopic(GROUP_CHAT_ID, topicId, {
+        name: withStatusGlyph(topicName(project), want),
+      })
+      .catch(() => {});
+  }, STATUS_DEBOUNCE_MS);
+  timer.unref?.();
+  statusTimers.set(topicId, timer);
 }
 
 // Recent inbound (user-sent) message ids per topic, so /react can acknowledge
@@ -331,23 +400,28 @@ function statusText(): string {
     lines.push("(no bridged projects yet)");
     return lines.join("\n");
   }
-  // Every bridged project with its coarse state, so the overview answers "which
-  // projects are being worked on" — not just the ones that happen to be live.
+  // Every bridged project with its status, so the overview answers "which
+  // projects is Claude working on, which are idle, which are off".
   for (const project of projects) {
     const tid = projectTopicId(project);
+    const status = topicStatusOf(project);
     const live = tid !== undefined ? topicSessions.get(tid)?.size ?? 0 : 0;
     const queued = heldInbox.get(project)?.msgs.length ?? 0;
-    if (live > 0) {
+    let detail: string;
+    if (status === "queued") {
+      detail = `${queued} queued, no session`;
+    } else if (live > 0) {
       const labels = [...(topicSessions.get(tid!) ?? [])]
         .map((sid) => sessions.get(sid)?.label ?? sid)
         .join(", ");
-      lines.push(`🟢 ${topicName(project)} — ${live} session(s): ${labels}`);
-    } else if (queued > 0) {
-      lines.push(`🟡 ${topicName(project)} — ${queued} queued, no session`);
+      detail = `${live} session(s)${labels ? ": " + labels : ""}`;
     } else {
-      lines.push(`⚪ ${topicName(project)} — idle`);
+      detail = "no session";
     }
+    lines.push(`${statusGlyph(status)} ${topicName(project)} — ${detail}`);
   }
+  lines.push("");
+  lines.push("⏳ working · 🟢 ready · 🔔 needs you · 📥 queued · 💤 no session");
   return lines.join("\n");
 }
 
@@ -509,7 +583,14 @@ function initBot(): void {
     if (owner) deliverToSession(owner, inbound);
     else deliver(topicId, inbound);
     // Acknowledge routed delivery; the no-session case posts its own notice.
-    if (owner || (topicSessions.get(topicId)?.size ?? 0) > 0) startTyping(topicId);
+    if (owner || (topicSessions.get(topicId)?.size ?? 0) > 0) {
+      startTyping(topicId);
+      // A Telegram-driven turn is now working — set it here rather than relying
+      // on the activity hook, which may not fire for channel-injected prompts
+      // (the Stop hook still returns it to ready). No-op if the topic is unmapped.
+      const proj = projectForTopic(topicId);
+      if (proj) setActivity(proj, "working");
+    }
   });
 
   bot.on("callback_query", async (ctx) => {
@@ -744,6 +825,9 @@ async function handlePermissionCallback(
   // pending entry pointed at the live session), not the ask-time id baked into
   // the button.
   pendingPermissions.delete(key);
+  // The prompt is answered — drop 🔔 (back to ⏳/🟢 per the session's activity).
+  const ownerProj = sessions.get(owner)?.project;
+  if (ownerProj) refreshTopicStatus(ownerProj);
   if (!sessions.has(owner)) {
     // Never confirm a decision that went nowhere: the old code answered
     // "✅ Allowed" while deliverToSession dropped it and the terminal prompt
@@ -899,6 +983,20 @@ async function handle(req: Request): Promise<Response> {
     return json({ ok: true, sessions: sessions.size, version: VERSION, pid: process.pid });
   }
 
+  // Activity ping from the session's UserPromptSubmit/PreToolUse/Stop hooks —
+  // the ONLY way the leader learns a console-driven turn is working vs idle
+  // (the channel protocol carries no such signal). Keyed by project string with
+  // no sessionId, so it MUST sit above the sid guard, alongside /health and
+  // /register. Loopback-only and unauthenticated, exactly like the rest.
+  if (path === "/activity" && req.method === "POST") {
+    const { project, state } = (await req.json().catch(() => ({}))) as {
+      project?: string;
+      state?: string;
+    };
+    if (project) setActivity(project, state === "idle" ? "idle" : "working");
+    return json({ ok: true });
+  }
+
   if (path === "/register" && req.method === "POST") {
     const { project, name, label, prev, version } = (await req.json()) as {
       project: string;
@@ -966,6 +1064,10 @@ async function handle(req: Request): Promise<Response> {
       heldInbox.delete(project);
       fresh.queue.push(...held.msgs);
       log("held.drained", { sid: id, project, count: held.msgs.length });
+      // The new session is about to process the drained queue — show ⏳ (the
+      // Stop hook / TTL returns it to 🟢). Covers the case where the activity
+      // hook may not fire for queued channel messages.
+      if (held.msgs.length > 0) setActivity(project, "working");
     }
     // A registration keyed to the config dir is almost always the process.cwd()
     // fallback (identity race), not a real project — the client self-heals by
@@ -1097,6 +1199,8 @@ async function handle(req: Request): Promise<Response> {
         inputPreview,
         createdAt: Date.now(),
       });
+      refreshTopicStatus(s.project); // 🔔 blocked on the user
+
       if (pendingPermissions.size > 200) {
         const cutoff = Date.now() - 3600_000;
         for (const [k, v] of pendingPermissions) {
@@ -1132,7 +1236,7 @@ async function handle(req: Request): Promise<Response> {
       unbindTopic(s.id, s.topicId);
       sessions.delete(s.id);
       log("unregister", { sid: s.id });
-      refreshTopicStatus(proj); // ⚪ idle (or 🟡 if messages are queued)
+      refreshTopicStatus(proj); // 💤 no session (or 📥 if messages are queued)
       return json({ ok: true });
     }
   } catch (e) {
@@ -1256,7 +1360,7 @@ export async function tryBecomeLeader(): Promise<boolean> {
       if (now - held.at > HELD_TTL_MS) {
         heldInbox.delete(project);
         log("held.expired", { project, count: held.msgs.length });
-        refreshTopicStatus(project); // ⚪ idle — the queue is gone
+        refreshTopicStatus(project); // 💤 no session — the queue is gone
         // Tell the user their queued messages timed out — a broken "queued"
         // promise is worse than an honest "please resend".
         const tid = projectTopicId(project);
@@ -1328,6 +1432,11 @@ export function stopLeader(): void {
     typingTimer = null;
   }
   typingUntil.clear();
+  // Drop pending status-badge and activity-TTL timers too.
+  for (const t of statusTimers.values()) clearTimeout(t);
+  statusTimers.clear();
+  for (const t of activityTimers.values()) clearTimeout(t);
+  activityTimers.clear();
   if (reaperTimer) {
     clearInterval(reaperTimer);
     reaperTimer = null;

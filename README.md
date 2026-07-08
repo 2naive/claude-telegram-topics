@@ -91,7 +91,7 @@ All optional, set in the `.env` (or the environment):
 | `TG_TOPICS_LAUNCH_CMD` | Command used by remote session launch (`/start`, autostart). Default: `claude --permission-mode auto --dangerously-load-development-channels plugin:telegram-topics@claude-telegram-topics`. |
 | `TG_TOPICS_AUTOSTART` | `1` = when a message arrives for a project with no live session, launch one automatically (Windows only) instead of offering a button. |
 | `TG_TOPICS_LAUNCH_ROOTS` | Semicolon-separated trusted directories under which `/start <path>` may launch a **brand-new** project (one not yet in `topics.json`). **Default-deny**: unset = launch-by-path disabled. Launching an arbitrary path named in a chat message is remote code-exec, so keep this confined to roots you trust (e.g. `C:\Users\you\code`). |
-| `TG_TOPICS_STATUS_ICONS` | Topic-name status badge (🟢 live / 🟡 queued / ⚪ idle), the only per-topic signal visible in the topic **list**. On by default; set `0` to keep topic names unbadged. |
+| `TG_TOPICS_STATUS_ICONS` | Topic-name status badge — the only per-topic signal visible in the topic **list**: ⏳ working · 🟢 ready · 🔔 needs you (permission prompt) · 📥 queued (no session) · 💤 no session. Working/idle comes from the plugin's activity hooks (`hooks/hooks.json`, auto-active). On by default; set `0` to keep topic names unbadged. |
 
 ### State files
 

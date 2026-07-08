@@ -11,27 +11,64 @@ import {
   statusGlyph,
   stripStatusGlyph,
   withStatusGlyph,
+  computeTopicStatus,
 } from "../src/routing.ts";
 
 describe("topic status glyphs", () => {
   test("withStatusGlyph prefixes the state glyph", () => {
-    expect(withStatusGlyph("system", "active")).toBe("🟢 system");
-    expect(withStatusGlyph("system", "queued")).toBe("🟡 system");
-    expect(withStatusGlyph("system", "idle")).toBe("⚪ system");
+    expect(withStatusGlyph("system", "working")).toBe("⏳ system");
+    expect(withStatusGlyph("system", "ready")).toBe("🟢 system");
+    expect(withStatusGlyph("system", "attention")).toBe("🔔 system");
+    expect(withStatusGlyph("system", "queued")).toBe("📥 system");
+    expect(withStatusGlyph("system", "offline")).toBe("💤 system");
   });
 
   test("re-tagging is idempotent — the old glyph is stripped first", () => {
-    const once = withStatusGlyph("system", "active");
-    expect(withStatusGlyph(once, "idle")).toBe("⚪ system");
+    const once = withStatusGlyph("system", "working");
+    expect(withStatusGlyph(once, "offline")).toBe("💤 system");
     // No glyph accumulation across many transitions.
     let name = "my-repo";
-    for (const s of ["active", "idle", "queued", "active"] as const) name = withStatusGlyph(name, s);
+    for (const s of ["working", "offline", "queued", "ready"] as const) name = withStatusGlyph(name, s);
     expect(name).toBe("🟢 my-repo");
+  });
+
+  test("stripping also peels the legacy 0.8.x glyphs so upgrades stay clean", () => {
+    // 0.8.2 tagged topics 🟢/🟡/⚪; the first refresh under 0.9.0 must replace,
+    // not stack, those.
+    expect(withStatusGlyph("🟡 system", "working")).toBe("⏳ system");
+    expect(withStatusGlyph("⚪ system", "ready")).toBe("🟢 system");
   });
 
   test("stripStatusGlyph leaves an unbadged name untouched", () => {
     expect(stripStatusGlyph("plain name")).toBe("plain name");
-    expect(stripStatusGlyph(`${statusGlyph("active")} x`)).toBe("x");
+    expect(stripStatusGlyph(`${statusGlyph("working")} x`)).toBe("x");
+  });
+});
+
+describe("computeTopicStatus precedence", () => {
+  const base = { hasSession: false, working: false, queued: false, attention: false };
+  test("offline when nothing is happening", () => {
+    expect(computeTopicStatus(base)).toBe("offline");
+  });
+  test("queued only when no session holds messages", () => {
+    expect(computeTopicStatus({ ...base, queued: true })).toBe("queued");
+    // a live session outranks a queue (the queue drains into it)
+    expect(computeTopicStatus({ ...base, hasSession: true, queued: true })).toBe("ready");
+  });
+  test("a live session with no activity is ready", () => {
+    expect(computeTopicStatus({ ...base, hasSession: true })).toBe("ready");
+  });
+  test("working outranks ready but needs a live session", () => {
+    expect(computeTopicStatus({ ...base, hasSession: true, working: true })).toBe("working");
+    // working reported with no session must NOT show working (turn can't run)
+    expect(computeTopicStatus({ ...base, working: true })).toBe("offline");
+  });
+  test("attention (permission) outranks working and ready", () => {
+    expect(
+      computeTopicStatus({ hasSession: true, working: true, queued: false, attention: true }),
+    ).toBe("attention");
+    // attention also needs a session (the prompt belongs to one)
+    expect(computeTopicStatus({ ...base, attention: true })).toBe("offline");
   });
 });
 

@@ -80,17 +80,24 @@ export function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n) + "…" : s;
 }
 
-// Coarse per-topic liveness, rendered as a glyph prefixed to the topic NAME.
-// The name is the only signal the Bot API surfaces in the topic *list* (chat
-// actions show only inside an open topic; icon_color is create-only), so this
-// is the one way to see at a glance which projects have a session.
-export type TopicStatus = "active" | "queued" | "idle";
+// Per-topic status, rendered as a glyph prefixed to the topic NAME. The name is
+// the only signal the Bot API surfaces in the topic *list* (chat actions show
+// only inside an open topic; icon_color is create-only), so this is the one way
+// to see at a glance, per project, whether Claude is WORKING, merely READY, or
+// the CLI is off. Glyphs are shape-distinct (not same-shape colored circles) so
+// they read at a glance in a tiny mobile topic list.
+export type TopicStatus = "offline" | "queued" | "ready" | "working" | "attention";
 const STATUS_GLYPH: Record<TopicStatus, string> = {
-  active: "🟢",
-  queued: "🟡",
-  idle: "⚪",
+  working: "⏳", // Claude is actively processing a turn right now
+  ready: "🟢", // session alive, turn finished, awaiting your input
+  attention: "🔔", // session alive but blocked on YOU (permission prompt)
+  queued: "📥", // messages waiting, no session to process them
+  offline: "💤", // no session — the CLI is not running for this project
 };
-const ALL_GLYPHS = Object.values(STATUS_GLYPH);
+// Every glyph stripStatusGlyph must peel off before re-tagging — the current
+// set PLUS the legacy 0.8.x glyphs (🟡 queued, ⚪ idle), so upgrading cleans old
+// badges idempotently instead of stacking a second glyph.
+const STRIP_GLYPHS = [...Object.values(STATUS_GLYPH), "🟡", "⚪"];
 
 export function statusGlyph(status: TopicStatus): string {
   return STATUS_GLYPH[status];
@@ -98,7 +105,7 @@ export function statusGlyph(status: TopicStatus): string {
 
 /** Remove a leading status glyph (and following spaces) so re-tagging is idempotent. */
 export function stripStatusGlyph(name: string): string {
-  for (const g of ALL_GLYPHS) {
+  for (const g of STRIP_GLYPHS) {
     if (name.startsWith(g)) return name.slice(g.length).replace(/^\s+/, "");
   }
   return name;
@@ -107,6 +114,25 @@ export function stripStatusGlyph(name: string): string {
 /** Prefix a topic name with the glyph for `status`, replacing any existing one. */
 export function withStatusGlyph(name: string, status: TopicStatus): string {
   return `${STATUS_GLYPH[status]} ${stripStatusGlyph(name)}`;
+}
+
+/**
+ * Fold the raw per-topic signals into one status, applying precedence:
+ * attention > working > ready > queued > offline. `working` and `attention`
+ * require a live session (they describe what a session is doing); without one
+ * the topic is queued (messages held) or offline.
+ */
+export function computeTopicStatus(x: {
+  hasSession: boolean;
+  working: boolean;
+  queued: boolean;
+  attention: boolean;
+}): TopicStatus {
+  if (x.hasSession && x.attention) return "attention";
+  if (x.hasSession && x.working) return "working";
+  if (x.hasSession) return "ready";
+  if (x.queued) return "queued";
+  return "offline";
 }
 
 /**
