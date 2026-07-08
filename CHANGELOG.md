@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.8.2 — 2026-07-08
+
+Liveness & remote-launch improvements:
+
+- **Turn-long typing indicator**: the `typing…` action is now re-asserted every
+  ~4.5 s from an inbound message until the session replies (was a single ~5 s
+  blip), so the phone shows Claude is still working through the whole turn. It
+  is dropped the moment output arrives.
+- **Topic-name status badge**: each bridged topic is prefixed with 🟢 (live
+  session) / 🟡 (messages queued, no session) / ⚪ (idle) — the only per-topic
+  signal Telegram renders in the topic **list**. Updated only on a real state
+  change (one `editForumTopic` per session start/stop). Opt out with
+  `TG_TOPICS_STATUS_ICONS=0`.
+- **`/status` covers every bridged project**, not just the live ones — the
+  overview now answers "which projects are being worked on and which are idle".
+- **Launch a brand-new project from Telegram**: `/start <path>` bridges and
+  launches a directory that isn't in `topics.json` yet. Gated by
+  `TG_TOPICS_LAUNCH_ROOTS` (semicolon-separated trusted roots); **default-deny**
+  and `..`-traversal-proof, because launching an arbitrary path named in a chat
+  message is remote code-exec. Bare `/start` still shows the picker of already
+  bridged projects.
+
 ## 0.8.1 — 2026-07-08
 
 Formatting fidelity (second fuzz pass on the entity converter):

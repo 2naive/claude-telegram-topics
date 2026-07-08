@@ -22,3 +22,4 @@ process.env.TELEGRAM_GROUP_CHAT_ID = "-100999";
 delete process.env.TELEGRAM_ALLOWED_USER_IDS;
 delete process.env.TG_TOPICS_LAUNCH_CMD;
 delete process.env.TG_TOPICS_AUTOSTART;
+delete process.env.TG_TOPICS_LAUNCH_ROOTS;

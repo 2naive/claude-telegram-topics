@@ -1,5 +1,47 @@
 import { describe, expect, test } from "bun:test";
-import { buildStartLine, windowTitle, launchCommand } from "../src/spawn.ts";
+import {
+  buildStartLine,
+  windowTitle,
+  launchCommand,
+  isPathAllowed,
+  projectNameFromPath,
+  launchRoots,
+} from "../src/spawn.ts";
+
+describe("isPathAllowed (launch-by-path gate)", () => {
+  const roots = ["c:/users/naive/claude"];
+
+  test("default-deny when no roots are configured", () => {
+    // preload deletes TG_TOPICS_LAUNCH_ROOTS, so the env default is empty.
+    expect(launchRoots()).toEqual([]);
+    expect(isPathAllowed("c:/users/naive/claude/anything")).toBe(false);
+  });
+
+  test("allows a directory inside a trusted root (any slash/case)", () => {
+    expect(isPathAllowed("c:/users/naive/claude/newproj", roots)).toBe(true);
+    expect(isPathAllowed("C:\\Users\\naive\\claude\\newproj", roots)).toBe(true);
+    expect(isPathAllowed("c:/users/naive/claude", roots)).toBe(true); // the root itself
+  });
+
+  test("denies a sibling that only shares a name prefix", () => {
+    // "claude-evil" must not match root "claude" — the boundary check.
+    expect(isPathAllowed("c:/users/naive/claude-evil/x", roots)).toBe(false);
+    expect(isPathAllowed("c:/users/naive/elsewhere", roots)).toBe(false);
+  });
+
+  test("rejects .. traversal that would escape the root", () => {
+    expect(isPathAllowed("c:/users/naive/claude/../../windows/system32", roots)).toBe(false);
+    expect(isPathAllowed("c:/users/naive/claude/..", roots)).toBe(false);
+  });
+});
+
+describe("projectNameFromPath", () => {
+  test("takes the last path segment, keeping original case", () => {
+    expect(projectNameFromPath("C:\\Users\\naive\\claude\\MyRepo")).toBe("MyRepo");
+    expect(projectNameFromPath("/home/x/some-proj/")).toBe("some-proj");
+    expect(projectNameFromPath("c:/a/b/c")).toBe("c");
+  });
+});
 
 describe("windowTitle", () => {
   test("restricts to safe chars and prefixes", () => {

@@ -41,6 +41,8 @@ import {
   sessionPrefix,
   startCallbackData,
   truncate,
+  withStatusGlyph,
+  type TopicStatus,
   CONTROL_RESPONSE_HEADERS,
   LEADER_IDLE_TIMEOUT_SEC,
   POLL_MAX_SEC,
@@ -57,7 +59,14 @@ import {
 } from "./sent.ts";
 import { mdToTelegram, splitTelegram } from "./format.ts";
 import { apiRetry } from "./tgretry.ts";
-import { autostartEnabled, spawnSession } from "./spawn.ts";
+import {
+  autostartEnabled,
+  spawnSession,
+  isPathAllowed,
+  launchRoots,
+  projectNameFromPath,
+} from "./spawn.ts";
+import { existsSync } from "node:fs";
 import { log } from "./log.ts";
 
 export type Inbound =
@@ -174,6 +183,7 @@ function deliver(topicId: number, msg: Inbound): void {
     log("deliver.none", { topic: topicId, type: msg.type, held: !!project && msg.type === "message" });
     if (project && msg.type === "message") {
       holdInbound(project, msg);
+      refreshTopicStatus(project); // 🟡 queued, no session
       void postNoSessionNotice(topicId, project);
     }
     return;
@@ -181,16 +191,77 @@ function deliver(topicId: number, msg: Inbound): void {
   for (const sid of set) deliverToSession(sid, msg);
 }
 
-// A short-lived "typing…" in the topic acknowledges that an inbound message
-// reached a live session — from the phone, a routed message and a dead bridge
-// otherwise look identical for many seconds.
-const lastTyping = new Map<number, number>();
-function signalTyping(topicId: number): void {
-  const now = Date.now();
-  if (now - (lastTyping.get(topicId) ?? 0) < 5000) return;
-  lastTyping.set(topicId, now);
+// "typing…" tells the phone a routed message reached a live session AND that
+// Claude is still working. Telegram's chat action expires in ~5s and never
+// shows in the topic LIST, so it is re-asserted every ~4.5s for the duration of
+// a turn (cleared the moment the session emits output — sending a message
+// already clears the indicator, so leaving the pump on would re-raise a phantom
+// "typing"). List-level liveness is carried separately by the topic-name badge.
+const TYPING_REFRESH_MS = 4500;
+const TYPING_MAX_MS = 5 * 60_000; // safety cap: a turn that never replies stops here
+const typingUntil = new Map<number, number>(); // topicId -> deadline
+let typingTimer: ReturnType<typeof setInterval> | null = null;
+
+function emitTyping(topicId: number): void {
   void bot.api
     .sendChatAction(GROUP_CHAT_ID, "typing", { message_thread_id: topicId })
+    .catch(() => {});
+}
+
+function pumpTyping(): void {
+  const now = Date.now();
+  for (const [topicId, until] of typingUntil) {
+    if (now >= until || (topicSessions.get(topicId)?.size ?? 0) === 0) {
+      typingUntil.delete(topicId);
+      continue;
+    }
+    emitTyping(topicId);
+  }
+  if (typingUntil.size === 0 && typingTimer) {
+    clearInterval(typingTimer);
+    typingTimer = null;
+  }
+}
+
+function startTyping(topicId: number): void {
+  const fresh = !typingUntil.has(topicId);
+  typingUntil.set(topicId, Date.now() + TYPING_MAX_MS);
+  if (fresh) emitTyping(topicId); // show immediately, don't wait for a refresh tick
+  if (!typingTimer) {
+    typingTimer = setInterval(pumpTyping, TYPING_REFRESH_MS);
+    typingTimer.unref?.();
+  }
+}
+
+function stopTyping(topicId: number): void {
+  typingUntil.delete(topicId);
+}
+
+// Coarse topic-name status badge (🟢 live / 🟡 queued / ⚪ idle) — the only
+// per-topic signal Telegram renders in the topic LIST. Opt out with
+// TG_TOPICS_STATUS_ICONS=0. Edited only on a real state change, so it costs one
+// editForumTopic per session start/stop — nowhere near a flood.
+const STATUS_ICONS = process.env.TG_TOPICS_STATUS_ICONS !== "0";
+const topicStatusNow = new Map<number, TopicStatus>();
+
+function topicStatusOf(project: string): TopicStatus {
+  const tid = projectTopicId(project);
+  if (tid !== undefined && (topicSessions.get(tid)?.size ?? 0) > 0) return "active";
+  if ((heldInbox.get(project)?.msgs.length ?? 0) > 0) return "queued";
+  return "idle";
+}
+
+function refreshTopicStatus(project: string): void {
+  if (!STATUS_ICONS) return;
+  const topicId = projectTopicId(project);
+  if (topicId === undefined) return;
+  const status = topicStatusOf(project);
+  if (topicStatusNow.get(topicId) === status) return;
+  topicStatusNow.set(topicId, status);
+  void bot.api
+    .editForumTopic(GROUP_CHAT_ID, topicId, {
+      name: withStatusGlyph(topicName(project), status),
+    })
     .catch(() => {});
 }
 
@@ -255,15 +326,27 @@ function statusText(): string {
     `🤖 telegram-topics v${VERSION} — leader pid ${process.pid}, up ${up} min`,
     `sessions: ${sessions.size}`,
   ];
-  for (const [topicId, set] of topicSessions) {
-    const project = projectForTopic(topicId);
-    const labels = [...set]
-      .map((sid) => sessions.get(sid)?.label ?? sid)
-      .join(", ");
-    lines.push(`• ${project ? topicName(project) : `topic ${topicId}`}: ${labels}`);
+  const projects = knownProjects();
+  if (projects.length === 0) {
+    lines.push("(no bridged projects yet)");
+    return lines.join("\n");
   }
-  for (const [project, held] of heldInbox) {
-    lines.push(`• ${topicName(project)}: ${held.msgs.length} message(s) queued, no session`);
+  // Every bridged project with its coarse state, so the overview answers "which
+  // projects are being worked on" — not just the ones that happen to be live.
+  for (const project of projects) {
+    const tid = projectTopicId(project);
+    const live = tid !== undefined ? topicSessions.get(tid)?.size ?? 0 : 0;
+    const queued = heldInbox.get(project)?.msgs.length ?? 0;
+    if (live > 0) {
+      const labels = [...(topicSessions.get(tid!) ?? [])]
+        .map((sid) => sessions.get(sid)?.label ?? sid)
+        .join(", ");
+      lines.push(`🟢 ${topicName(project)} — ${live} session(s): ${labels}`);
+    } else if (queued > 0) {
+      lines.push(`🟡 ${topicName(project)} — ${queued} queued, no session`);
+    } else {
+      lines.push(`⚪ ${topicName(project)} — idle`);
+    }
   }
   return lines.join("\n");
 }
@@ -290,21 +373,79 @@ function startKeyboard(): { inline_keyboard: Array<Array<{ text: string; callbac
 // The leader answers /status and /start itself — they must work precisely when
 // no session is alive to answer. Both work from any topic AND from the General
 // topic (which carries no thread id and is otherwise ignored).
+// Launch a brand-new project (not yet in topics.json) by path — the /start
+// <path> form. Gated by isPathAllowed (default-deny; opt in with
+// TG_TOPICS_LAUNCH_ROOTS) because launching an arbitrary directory from a chat
+// message is remote code-exec.
+async function startByPath(
+  rawPath: string,
+  thread: { message_thread_id?: number },
+): Promise<void> {
+  const say = (text: string): Promise<unknown> =>
+    bot.api.sendMessage(GROUP_CHAT_ID, text, thread).catch(() => {});
+  if (!isPathAllowed(rawPath)) {
+    log("session.startpath.deny", { path: rawPath, roots: launchRoots().length });
+    await say(
+      launchRoots().length
+        ? `⛔ "${truncate(rawPath, 120)}" is outside the allowed launch roots.`
+        : "⛔ Launch-by-path is disabled. Set TG_TOPICS_LAUNCH_ROOTS on the machine to the trusted root(s) to enable it.",
+    );
+    return;
+  }
+  let isDir = false;
+  try {
+    isDir = existsSync(rawPath) && statSync(rawPath).isDirectory();
+  } catch {
+    isDir = false;
+  }
+  if (!isDir) {
+    await say(`⛔ Not an existing directory: ${truncate(rawPath, 120)}`);
+    return;
+  }
+  const key = normalizePath(rawPath);
+  const name = projectNameFromPath(rawPath);
+  let topicId: number;
+  try {
+    topicId = await resolveTopic(bot.api, key, name);
+  } catch (e) {
+    await say(`⚠️ Could not create a topic: ${truncate(String(e), 150)}`);
+    return;
+  }
+  const live = topicSessions.get(topicId)?.size ?? 0;
+  if (live > 0) {
+    await say(`"${name}" already has ${live} live session(s).`);
+    return;
+  }
+  const err = spawnSession(rawPath, name);
+  log("session.startpath", { path: rawPath, key, topicId, error: err ?? "" });
+  await say(
+    err ? `⚠️ ${truncate(err, 180)}` : `🚀 Launching "${name}" — it registers within ~30 s.`,
+  );
+}
+
 async function handleCommand(text: string, topicId: number | undefined): Promise<boolean> {
-  const cmd = text.split("@")[0]!.trim();
+  const sp = text.search(/\s/);
+  const head = (sp === -1 ? text : text.slice(0, sp)).split("@")[0]!.trim();
+  const arg = sp === -1 ? "" : text.slice(sp + 1).trim();
   const thread = topicId === undefined ? {} : { message_thread_id: topicId };
-  if (cmd === "/status") {
+  if (head === "/status") {
     await bot.api.sendMessage(GROUP_CHAT_ID, statusText(), thread).catch(() => {});
     return true;
   }
-  if (cmd === "/start") {
+  if (head === "/start") {
+    // `/start <path>` launches a new project; bare `/start` shows the picker of
+    // projects already bridged.
+    if (arg) {
+      await startByPath(arg, thread);
+      return true;
+    }
     const kb = startKeyboard();
     await bot.api
       .sendMessage(
         GROUP_CHAT_ID,
         kb
-          ? "Pick a project to launch a Claude Code session for:"
-          : "No known projects yet — start a session from the machine once, and its project appears here.",
+          ? "Pick a project to launch a Claude Code session for (or send `/start <path>` for a new one):"
+          : "No known projects yet — send `/start <path>` (a directory under TG_TOPICS_LAUNCH_ROOTS) to launch one.",
         { ...thread, reply_markup: kb },
       )
       .catch(() => {});
@@ -327,10 +468,11 @@ function initBot(): void {
     if (!isAllowedUser(m.from?.id)) return;
     const topicId = m.message_thread_id;
     // Leader-answered commands work everywhere, including the General topic.
-    // Only a BARE command is intercepted; "/status of the deploy" falls
-    // through to normal delivery instead of being silently swallowed.
-    if (m.text && /^\/(status|start)(@\w+)?$/.test(m.text.trim())) {
-      if (await handleCommand(m.text.trim(), topicId)) return;
+    // `/status` is intercepted only bare ("/status of the deploy" falls through
+    // to normal delivery); `/start` is intercepted bare OR with a path arg.
+    const t = m.text?.trim();
+    if (t && (/^\/status(@\w+)?$/.test(t) || /^\/start(@\w+)?(\s+\S.*)?$/.test(t))) {
+      if (await handleCommand(t, topicId)) return;
     }
     if (topicId === undefined) return; // General topic / non-topic messages ignored
     trackInbound(m.message_id, topicId);
@@ -367,7 +509,7 @@ function initBot(): void {
     if (owner) deliverToSession(owner, inbound);
     else deliver(topicId, inbound);
     // Acknowledge routed delivery; the no-session case posts its own notice.
-    if (owner || (topicSessions.get(topicId)?.size ?? 0) > 0) signalTyping(topicId);
+    if (owner || (topicSessions.get(topicId)?.size ?? 0) > 0) startTyping(topicId);
   });
 
   bot.on("callback_query", async (ctx) => {
@@ -672,6 +814,7 @@ async function withRecovery<T>(
 }
 
 async function sendText(s: Session, text: string, options?: string[]): Promise<number> {
+  stopTyping(s.topicId); // the reply is arriving — drop the "typing" keepalive
   const outText =
     sessionPrefix(s.label, topicSessions.get(s.topicId)?.size ?? 1) + text;
   // Markdown is converted to explicit entities (never parse_mode): intra-word
@@ -722,6 +865,7 @@ async function sendText(s: Session, text: string, options?: string[]): Promise<n
 const PHOTO_EXT = new Set([".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp"]);
 
 async function sendFile(s: Session, path: string, caption: string): Promise<number> {
+  stopTyping(s.topicId);
   const isPhoto = PHOTO_EXT.has(path.slice(path.lastIndexOf(".")).toLowerCase());
   const cap =
     sessionPrefix(s.label, topicSessions.get(s.topicId)?.size ?? 1) + caption;
@@ -833,6 +977,7 @@ async function handle(req: Request): Promise<Response> {
       );
     }
     log("register", { sid: id, project, prev: prev ?? "", sessions: sessions.size });
+    refreshTopicStatus(project); // 🟢 live now
     return json({ sessionId: id, topicId });
   }
 
@@ -983,9 +1128,11 @@ async function handle(req: Request): Promise<Response> {
       return json({ messages });
     }
     if (path === "/unregister") {
+      const proj = s.project;
       unbindTopic(s.id, s.topicId);
       sessions.delete(s.id);
       log("unregister", { sid: s.id });
+      refreshTopicStatus(proj); // ⚪ idle (or 🟡 if messages are queued)
       return json({ ok: true });
     }
   } catch (e) {
@@ -1098,15 +1245,18 @@ export async function tryBecomeLeader(): Promise<boolean> {
     const now = Date.now();
     for (const [id, s] of sessions) {
       if (now - s.lastActive > 3 * 3600 * 1000) {
+        const proj = s.project;
         unbindTopic(id, s.topicId);
         sessions.delete(id);
         log("session.reaped", { sid: id });
+        refreshTopicStatus(proj);
       }
     }
     for (const [project, held] of heldInbox) {
       if (now - held.at > HELD_TTL_MS) {
         heldInbox.delete(project);
         log("held.expired", { project, count: held.msgs.length });
+        refreshTopicStatus(project); // ⚪ idle — the queue is gone
         // Tell the user their queued messages timed out — a broken "queued"
         // promise is worse than an honest "please resend".
         const tid = projectTopicId(project);
@@ -1172,6 +1322,12 @@ export function stopLeader(): void {
     // already stopped
   }
   bunServer = null;
+  // Drop the typing keepalive — a demoted leader must not keep poking the bot.
+  if (typingTimer) {
+    clearInterval(typingTimer);
+    typingTimer = null;
+  }
+  typingUntil.clear();
   if (reaperTimer) {
     clearInterval(reaperTimer);
     reaperTimer = null;

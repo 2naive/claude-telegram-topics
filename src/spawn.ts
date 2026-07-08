@@ -10,6 +10,7 @@
 // so spawning is refused with a clear message instead of half-working.
 
 import { log } from "./log.ts";
+import { normalizePath } from "./paths.ts";
 
 export const DEFAULT_LAUNCH_CMD =
   "claude --permission-mode auto --dangerously-load-development-channels plugin:telegram-topics@claude-telegram-topics";
@@ -20,6 +21,39 @@ export function launchCommand(): string {
 
 export function autostartEnabled(): boolean {
   return process.env.TG_TOPICS_AUTOSTART === "1";
+}
+
+/**
+ * Trusted roots under which `/start <path>` may launch a BRAND-NEW project (one
+ * not yet in topics.json). Semicolon-separated, from TG_TOPICS_LAUNCH_ROOTS.
+ */
+export function launchRoots(): string[] {
+  return (process.env.TG_TOPICS_LAUNCH_ROOTS ?? "")
+    .split(";")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map(normalizePath);
+}
+
+/**
+ * True when `target` sits inside an allowlisted launch root. DEFAULT-DENY: with
+ * no TG_TOPICS_LAUNCH_ROOTS set nothing is launchable by path — launching an
+ * arbitrary directory named in a chat message is remote code-exec, so it stays
+ * opt-in and confined to roots the user explicitly trusts. A `..` segment is
+ * rejected outright — normalizePath folds slashes and case but does NOT resolve
+ * `..`, so `root/../../Windows` would otherwise prefix-match its root.
+ */
+export function isPathAllowed(target: string, roots = launchRoots()): boolean {
+  if (roots.length === 0) return false;
+  const t = normalizePath(target);
+  if (t.split("/").includes("..")) return false;
+  return roots.some((r) => t === r || t.startsWith(r.endsWith("/") ? r : r + "/"));
+}
+
+/** Project display name from a path — its last segment, original case kept. */
+export function projectNameFromPath(target: string): string {
+  const seg = target.replace(/[\\/]+$/, "").split(/[\\/]/).pop();
+  return (seg ?? "").trim() || target;
 }
 
 /** Console window title: strictly safe chars so cmd quoting can't break. */

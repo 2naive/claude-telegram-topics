@@ -80,6 +80,35 @@ export function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n) + "…" : s;
 }
 
+// Coarse per-topic liveness, rendered as a glyph prefixed to the topic NAME.
+// The name is the only signal the Bot API surfaces in the topic *list* (chat
+// actions show only inside an open topic; icon_color is create-only), so this
+// is the one way to see at a glance which projects have a session.
+export type TopicStatus = "active" | "queued" | "idle";
+const STATUS_GLYPH: Record<TopicStatus, string> = {
+  active: "🟢",
+  queued: "🟡",
+  idle: "⚪",
+};
+const ALL_GLYPHS = Object.values(STATUS_GLYPH);
+
+export function statusGlyph(status: TopicStatus): string {
+  return STATUS_GLYPH[status];
+}
+
+/** Remove a leading status glyph (and following spaces) so re-tagging is idempotent. */
+export function stripStatusGlyph(name: string): string {
+  for (const g of ALL_GLYPHS) {
+    if (name.startsWith(g)) return name.slice(g.length).replace(/^\s+/, "");
+  }
+  return name;
+}
+
+/** Prefix a topic name with the glyph for `status`, replacing any existing one. */
+export function withStatusGlyph(name: string, status: TopicStatus): string {
+  return `${STATUS_GLYPH[status]} ${stripStatusGlyph(name)}`;
+}
+
 /**
  * A per-pid session record Claude Code writes to <config>/sessions/*.json — the
  * only place the harness exposes a session's `/rename` name and its real cwd.

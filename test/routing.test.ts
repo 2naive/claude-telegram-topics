@@ -8,7 +8,32 @@ import {
   remapValues,
   sessionPrefix,
   truncate,
+  statusGlyph,
+  stripStatusGlyph,
+  withStatusGlyph,
 } from "../src/routing.ts";
+
+describe("topic status glyphs", () => {
+  test("withStatusGlyph prefixes the state glyph", () => {
+    expect(withStatusGlyph("system", "active")).toBe("🟢 system");
+    expect(withStatusGlyph("system", "queued")).toBe("🟡 system");
+    expect(withStatusGlyph("system", "idle")).toBe("⚪ system");
+  });
+
+  test("re-tagging is idempotent — the old glyph is stripped first", () => {
+    const once = withStatusGlyph("system", "active");
+    expect(withStatusGlyph(once, "idle")).toBe("⚪ system");
+    // No glyph accumulation across many transitions.
+    let name = "my-repo";
+    for (const s of ["active", "idle", "queued", "active"] as const) name = withStatusGlyph(name, s);
+    expect(name).toBe("🟢 my-repo");
+  });
+
+  test("stripStatusGlyph leaves an unbadged name untouched", () => {
+    expect(stripStatusGlyph("plain name")).toBe("plain name");
+    expect(stripStatusGlyph(`${statusGlyph("active")} x`)).toBe("x");
+  });
+});
 
 describe("parseCallback", () => {
   test("parses a permission button", () => {
