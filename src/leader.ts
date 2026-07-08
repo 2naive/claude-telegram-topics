@@ -347,11 +347,12 @@ function refreshTopicStatus(project: string): void {
     const want = statusTarget.get(topicId);
     if (want === undefined || topicStatusNow.get(topicId) === want) return;
     topicStatusNow.set(topicId, want);
+    log("badge", { topicId, status: want });
     void bot.api
       .editForumTopic(GROUP_CHAT_ID, topicId, {
         name: withStatusGlyph(topicName(project), want),
       })
-      .catch(() => {});
+      .catch((e) => log("badge.fail", { topicId, error: String(e) }));
   }, STATUS_DEBOUNCE_MS);
   timer.unref?.();
   statusTimers.set(topicId, timer);
@@ -1016,6 +1017,7 @@ async function handle(req: Request): Promise<Response> {
       project?: string;
       state?: string;
     };
+    log("activity", { project: project ?? "", state: state ?? "" });
     if (project) {
       if (state === "failed") notifyTurnFailed(project);
       else setActivity(project, state === "idle" ? "idle" : "working");

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.2 — 2026-07-08
+
+- **Observability for the activity signal**: the leader now logs an `activity`
+  entry on every `/activity` POST and a `badge` entry each time a topic-name
+  badge changes (with `badge.fail` + the error if `editForumTopic` is rejected).
+  This makes it verifiable from `leader.log` whether the plugin's hooks are
+  actually firing — the load-bearing assumption behind the working/idle badge
+  and the turn-failure notice — and surfaces any missing-permission failures.
+
 ## 0.9.1 — 2026-07-08
 
 - **Turn-failure notice**: when a turn aborts with an API/model error (500,
