@@ -33,6 +33,18 @@
           }
         ]
       }
+    ],
+    "StopFailure": [
+      {
+        "matcher": "server_error|overloaded|rate_limit|authentication_failed|oauth_org_not_allowed|billing_error|invalid_request|model_not_found|max_output_tokens|unknown",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/hooks/activity.ts\" failed",
+            "timeout": 5
+          }
+        ]
+      }
     ]
   }
 }

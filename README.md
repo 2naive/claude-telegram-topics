@@ -21,6 +21,14 @@ plugin is single-session and has no per-project threads. This fork fixes both:
   port and becomes the **leader**: it owns the single bot poller. Every other
   session is a **follower** that reaches the bot over `127.0.0.1`. If the leader
   exits, the next session transparently re-elects.
+- **Status at a glance.** Each topic's name carries a live badge visible in the
+  topic list — ⏳ working · 🟢 ready · 🔔 needs you · 📥 queued · 💤 no session —
+  so you can see which projects Claude is working on and which are idle without
+  opening them.
+- **Drive it from your phone.** Launch or resume a project's session straight
+  from Telegram (a ▶️ Start button, the `/start` picker, `/start <path>`, or
+  autostart), and approve tool calls with Allow/Deny buttons — no reaching back
+  to the terminal.
 
 ```
  session A ─┐
@@ -210,26 +218,44 @@ level is a local TUI control with no remote hook — set it at launch or via
 
 You never have to guess whether the bridge is alive:
 
+- **Status badge** — each topic's **name** is prefixed with a live glyph, the
+  one per-project signal Telegram shows in the topic *list*: **⏳ working**
+  (Claude is processing a turn) · **🟢 ready** (session alive, awaiting you) ·
+  **🔔 needs you** (a permission prompt is waiting) · **📥 queued** (messages
+  held, no session) · **💤 no session** (the CLI isn't running). Working/idle
+  comes from the plugin's activity hooks (`hooks/hooks.json`, auto-active) plus
+  the leader's own signal for Telegram-driven turns; it flips per turn. Set
+  `TG_TOPICS_STATUS_ICONS=0` to keep topic names unbadged.
 - **`/status`** (in any topic, or General) — the leader itself answers with its
-  version, pid, uptime, and the live sessions per project. Answered whenever any
-  bridge session is running on the machine (the leader answers even if no
-  *session* is on that topic); total silence means the bridge itself is down.
+  version, pid and uptime, then **one line per bridged project** (its glyph +
+  name + session labels, or `N queued, no session`, or `no session`) and a
+  legend line — so you see idle and offline projects too, not just live ones.
+  Total silence means the bridge itself is down.
 - **Typing indicator** — when your message is routed to a live session, the bot
-  briefly shows *typing…* in the topic; a routed message and a dead bridge no
-  longer look identical.
+  shows *typing…* in the topic for the whole turn (re-asserted every few seconds
+  until the reply arrives), so a routed message and a dead bridge never look
+  alike.
 - **No live session?** Your message is **queued** (up to 20 messages / 30 min)
   and the topic gets a `📴 No active session` notice with a **▶️ Start session**
   button. Tap it and the leader launches a new Claude Code session for that
   project on the machine (a console window running `TG_TOPICS_LAUNCH_CMD`);
   once it registers, the queued messages are delivered to it. Set
   `TG_TOPICS_AUTOSTART=1` to skip the button and launch automatically.
-- **`/start`** (anywhere, incl. General) — lists bridged projects as buttons (up
-  to 20); tap one to launch a session for it. Only projects already in
-  `topics.json` can be launched — never arbitrary paths from chat.
+- **`/start`** (anywhere, incl. General) — bare `/start` lists already-bridged
+  projects as buttons (up to 20); tap one to launch a session. `/start <path>`
+  bridges **and** launches a project not yet in `topics.json` — but only when
+  `<path>` sits under a trusted root in `TG_TOPICS_LAUNCH_ROOTS` (default-deny,
+  `..`-traversal-proof); otherwise the leader refuses with *"Launch-by-path is
+  disabled"*.
+- **Turn failed?** If a turn aborts with an API/model error (e.g. a 500), the
+  topic gets a `⚠️ The last turn ended with an API/model error` notice — so a
+  failure isn't silent (the badge would otherwise just fall back to 🟢). Detected
+  via the `StopFailure` hook. Note: a *user interrupt* (Esc), a hang, or a hard
+  crash fire no Claude Code hook, so those aren't signalled.
 
 Remote launch is Windows-only for now (it opens a real console window, so the
 session survives and has a TTY). Launching is gated by the same allowlist as
-everything else.
+everything else, plus `TG_TOPICS_LAUNCH_ROOTS` for brand-new paths.
 
 ## Approving tool calls from Telegram
 
@@ -353,9 +379,11 @@ hand-offs, routing decisions, drop reasons).
   it. Fine for a single-user machine; do not run on shared/multi-user hosts as-is.
 - `send_file` refuses paths inside the state dir (won't leak the token).
 - Remote session launch (`/start`, the ▶️ button, autostart) executes
-  `TG_TOPICS_LAUNCH_CMD` on your machine — it is restricted to projects already
-  in `topics.json` and to allowlisted users, but treat allowlist membership as
-  "may start Claude Code here". Note the **default empty allowlist is fail-open**,
+  `TG_TOPICS_LAUNCH_CMD` on your machine. Launch targets are a project already in
+  `topics.json` **or**, via `/start <path>`, any directory under a
+  `TG_TOPICS_LAUNCH_ROOTS` trusted root (default-deny, `..`-traversal-proof) —
+  so treat allowlist membership as "may start Claude Code at any path under the
+  trusted roots". Note the **default empty allowlist is fail-open**,
   so on a shared group this means any member can launch sessions too, not just
   send messages — set an allowlist if that matters.
 - Use a **dedicated bot token** for this plugin. Reusing the same token as
@@ -376,8 +404,13 @@ hand-offs, routing decisions, drop reasons).
   than lost.
 - One forum group per machine (all projects share it, one topic each).
 - Remote session launch is Windows-only.
-- Outbound, inbound streaming, choice buttons, reply routing, reactions and the
-  tool-approval relay (prompt → tap → decision) are live-tested.
+- A **user interrupt** (Esc), a hang, or a hard crash fire no Claude Code hook,
+  so — unlike an API error, which raises a `⚠️` notice via `StopFailure` — those
+  cases aren't signalled to Telegram; the working badge falls back to 🟢 on its
+  120 s TTL.
+- Outbound, inbound streaming, choice buttons, reply routing and reactions are
+  live-tested. The tool-approval relay was live-verified on an earlier build; its
+  0.8.0 re-registration-routing hardening is unit-tested, live re-test pending.
 
 ## Development
 

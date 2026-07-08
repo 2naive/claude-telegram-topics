@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.9.1 — 2026-07-08
+
+- **Turn-failure notice**: when a turn aborts with an API/model error (500,
+  rate_limit, overloaded, max_tokens, …), the topic gets a `⚠️` alert instead of
+  silently falling back to 🟢 — so a failure that used to be invisible in
+  Telegram now pings you. Detected via the `StopFailure` hook (mutually
+  exclusive with `Stop`, so success vs failure is unambiguous), rate-limited to
+  one notice / 20 s / topic. A user interrupt (Esc), hang, or hard crash fire no
+  Claude Code hook, so those remain unsignalled (documented).
+- **Docs refreshed for 0.9.x**: the status-badge legend now appears in the
+  narrative and the "Why", the `/start <path>` behaviour is corrected (it was
+  described as impossible), `/status` is documented as covering every project +
+  legend, the typing indicator as turn-long, and the permission-relay test
+  status is reconciled between sections.
+- **Discovery metadata**: `author`, expanded keywords and a phone-first
+  description across `plugin.json`/`package.json`; `repository`/`homepage`/`bugs`
+  added to `package.json`; owner URL in `marketplace.json`. Annotated release
+  tags added.
+
 ## 0.9.0 — 2026-07-08
 
 Topic-name status badge now distinguishes **working** from **idle** — the

@@ -69,10 +69,16 @@ is the usual real cause.
 If all checks pass, tell the user the channel is ready and to relaunch with:
 
 ```
-claude --dangerously-load-development-channels plugin:telegram-topics@claude-telegram-topics
+claude --permission-mode auto --dangerously-load-development-channels plugin:telegram-topics@claude-telegram-topics
 ```
 
 During the channels research preview this flag **replaces** `--channels`
 (custom channels are not allowlisted for it), and it consumes everything after
 it as channel names — any other option (`--permission-mode`, …) must come
-BEFORE it.
+BEFORE it. `--permission-mode auto` enables the Telegram permission-approval
+relay (safe calls pass silently, risky ones relay to the topic); drop it for the
+default manual mode.
+
+The token never needs to reach this chat: a privacy-conscious user can set
+`TELEGRAM_BOT_TOKEN=…` by hand in `~/.claude/channels/telegram-topics/.env`
+(this skill never prints the token back), then just run the relaunch command.

@@ -5,7 +5,9 @@
 // console-driven turns.
 //
 // Wired (hooks/hooks.json): UserPromptSubmit + PreToolUse -> "working" (the
-// second re-arms the leader's working-TTL through long turns); Stop -> "idle".
+// second re-arms the leader's working-TTL through long turns); Stop -> "idle";
+// StopFailure -> "failed" (an API error aborted the turn — Stop and StopFailure
+// are mutually exclusive, so this cleanly flags a failed turn).
 //
 // CONTRACT: this runs on every prompt and every tool call, so it MUST be
 // fire-and-forget — a 300ms timeout, all errors swallowed, always exit 0. It
@@ -41,7 +43,8 @@ function resolvePort(): number {
 }
 
 async function main(): Promise<void> {
-  const state = process.argv[2] === "idle" ? "idle" : "working";
+  const arg = process.argv[2];
+  const state = arg === "idle" ? "idle" : arg === "failed" ? "failed" : "working";
   // CLAUDE_PROJECT_DIR is the session's project root; keyFromCwd resolves it to
   // the git top-level (the same key the leader registered), so a subdirectory
   // cwd still maps to the right topic. Falls back to process.cwd() on older

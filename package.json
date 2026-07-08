@@ -1,8 +1,24 @@
 {
   "name": "claude-telegram-topics",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "description": "Telegram channel for Claude Code with 1 project = 1 forum topic. Concurrent multi-project support via a leader/follower bridge. Clean fork of the official Anthropic Telegram plugin.",
   "license": "Apache-2.0",
+  "author": { "name": "2naive", "url": "https://github.com/2naive" },
+  "repository": { "type": "git", "url": "git+https://github.com/2naive/claude-telegram-topics.git" },
+  "homepage": "https://github.com/2naive/claude-telegram-topics#readme",
+  "bugs": { "url": "https://github.com/2naive/claude-telegram-topics/issues" },
+  "keywords": [
+    "telegram",
+    "claude-code",
+    "mcp",
+    "channel",
+    "forum",
+    "topics",
+    "notifications",
+    "remote",
+    "mobile",
+    "multi-project"
+  ],
   "type": "module",
   "bin": "./src/server.ts",
   "scripts": {

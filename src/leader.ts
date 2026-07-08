@@ -285,6 +285,29 @@ function setActivity(project: string, state: "working" | "idle"): void {
   refreshTopicStatus(project);
 }
 
+// A turn aborted with an API/model error (StopFailure hook, mutually exclusive
+// with Stop). The session returns to idle/ready — but a silent 🟢 would HIDE
+// the failure, so post an alert (short cooldown against error storms). This is
+// the only reliable failure signal: the channel protocol carries none, Stop
+// fires only on success, and interrupts/hangs/crashes fire no hook at all.
+const FAILURE_NOTICE_COOLDOWN_MS = 20_000;
+const lastFailureNotice = new Map<number, number>();
+function notifyTurnFailed(project: string): void {
+  setActivity(project, "idle"); // the turn is over; the session now awaits a retry
+  const topicId = projectTopicId(project);
+  if (topicId === undefined) return;
+  const now = Date.now();
+  if (now - (lastFailureNotice.get(topicId) ?? 0) < FAILURE_NOTICE_COOLDOWN_MS) return;
+  lastFailureNotice.set(topicId, now);
+  void bot.api
+    .sendMessage(
+      GROUP_CHAT_ID,
+      "⚠️ The last turn ended with an API/model error — the session is idle. Resend the message or retry in the terminal.",
+      { message_thread_id: topicId },
+    )
+    .catch(() => {});
+}
+
 // A permission relay pending for any session on this project's topic → 🔔.
 function hasPendingPermission(project: string): boolean {
   for (const p of pendingPermissions.values()) {
@@ -993,7 +1016,10 @@ async function handle(req: Request): Promise<Response> {
       project?: string;
       state?: string;
     };
-    if (project) setActivity(project, state === "idle" ? "idle" : "working");
+    if (project) {
+      if (state === "failed") notifyTurnFailed(project);
+      else setActivity(project, state === "idle" ? "idle" : "working");
+    }
     return json({ ok: true });
   }
 

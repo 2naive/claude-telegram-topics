@@ -1,8 +1,22 @@
 {
   "name": "telegram-topics",
-  "description": "Telegram channel for Claude Code — 1 project = 1 forum topic. Each project's session streams into its own topic in a Telegram forum group; multiple projects run concurrently. Configure with /telegram-topics:configure.",
-  "version": "0.9.0",
-  "keywords": ["telegram", "messaging", "channel", "mcp", "forum", "topics"],
+  "description": "Telegram channel for Claude Code — 1 project = 1 forum topic, with a live working/idle status badge on each topic. Run multiple projects concurrently, get notifications, and drive or approve sessions remotely from your phone. Configure with /telegram-topics:configure.",
+  "version": "0.9.1",
+  "author": { "name": "2naive", "url": "https://github.com/2naive" },
+  "keywords": [
+    "telegram",
+    "messaging",
+    "channel",
+    "mcp",
+    "forum",
+    "topics",
+    "notifications",
+    "remote",
+    "mobile",
+    "multi-project",
+    "claude-code",
+    "monitoring"
+  ],
   "license": "Apache-2.0",
   "homepage": "https://github.com/2naive/claude-telegram-topics",
   "repository": "https://github.com/2naive/claude-telegram-topics"
