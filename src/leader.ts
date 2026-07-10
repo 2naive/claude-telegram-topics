@@ -251,7 +251,14 @@ const topicStatusNow = new Map<number, TopicStatus>();
 // to tell "Claude is working" from "session idle". A working entry carries a
 // TTL re-armed by every PreToolUse heartbeat: if a Stop is ever missed (crash),
 // the badge falls back to 🟢 ready rather than a stuck ⏳ that lies.
-const ACTIVITY_TTL_MS = 120_000;
+// Working-state backstop, NOT the primary idle signal. Stop/StopFailure hooks
+// return the badge to idle at turn end reliably (verified live), so this only
+// catches turns that fire no terminal hook at all — an Esc-interrupt, a hang, a
+// hard crash. It must therefore exceed the longest hook-less stretch of a real
+// turn (a long final generation after the last tool call fires no PreToolUse
+// heartbeat); 2 min tripped mid-turn and flipped a busy topic to 🟢 before its
+// reply landed. 15 min never trips on real work; a genuine hang clears within it.
+const ACTIVITY_TTL_MS = 900_000;
 const activity = new Map<string, { state: "working" | "idle"; until: number }>();
 const activityTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -352,7 +359,13 @@ function refreshTopicStatus(project: string): void {
       .editForumTopic(GROUP_CHAT_ID, topicId, {
         name: withStatusGlyph(topicName(project), want),
       })
-      .catch((e) => log("badge.fail", { topicId, error: String(e) }));
+      .catch((e) => {
+        // TOPIC_NOT_MODIFIED just means the name already carries this glyph — our
+        // in-memory cache resets on a leader hand-off, so the first edit per topic
+        // can no-op. That is success, not a failure worth logging.
+        if (!String(e).includes("TOPIC_NOT_MODIFIED"))
+          log("badge.fail", { topicId, error: String(e) });
+      });
   }, STATUS_DEBOUNCE_MS);
   timer.unref?.();
   statusTimers.set(topicId, timer);

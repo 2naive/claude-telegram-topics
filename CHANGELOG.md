@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.9.3 — 2026-07-10
+
+- **Badge no longer flips to 🟢 mid-turn.** The working-state TTL was 2 minutes;
+  a long turn whose final generation runs longer than that between tool calls
+  (which re-arm it) expired the timer and showed a busy topic as ready before
+  its reply arrived. The `Stop`/`StopFailure` hooks return the badge to idle
+  reliably at turn end (now verified live from `leader.log`), so the TTL is only
+  a backstop for turns that fire no terminal hook at all (Esc-interrupt, hang,
+  crash) — raised to 15 minutes, so it never trips on real work while a genuine
+  hang still clears within it.
+- **Quieter logs**: a `TOPIC_NOT_MODIFIED` from the first badge edit after a
+  leader hand-off (the topic name already carries the glyph) is treated as
+  success instead of logged as `badge.fail`.
+- **Activity hooks confirmed**: `leader.log` now shows `activity working/idle`
+  and `badge` transitions on every turn, verifying that this Claude Code build
+  honors the plugin-shipped hooks — the load-bearing assumption behind the 0.9.0
+  working/idle badge and the 0.9.1 turn-failure notice.
+
 ## 0.9.2 — 2026-07-08
 
 - **Observability for the activity signal**: the leader now logs an `activity`
