@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.10.0 — 2026-07-11
+
+- **Console → Telegram auto-mirror.** The turn's final answer is posted to the
+  topic **verbatim from the transcript** by the `Stop` hook, instead of the model
+  re-typing it with `send_message`. Re-typing drifted — dropped steps, reworded
+  lines, different counts between what you saw in the console and on your phone
+  (a real hazard when the two must agree, e.g. instructions or figures). The
+  mirror sends the exact assistant text, rendered through the same entity
+  formatter as every other message.
+  - New `Stop` hook `hooks/mirror.ts` reads the transcript's last assistant
+    message (`src/transcript.ts`, a pure, unit-tested extractor) and POSTs it to
+    the leader's new `/mirror` endpoint. Fire-and-forget: a bounded read + one
+    localhost POST, always exits 0, never delays a turn.
+  - **No double-posting.** If the session already sent something itself this turn
+    — a `send_message` with buttons, a file, an `edit` — the mirror stands down;
+    the model's own message is authoritative. Tracked by a per-project "spoke
+    this turn" flag, reset at each turn start (`UserPromptSubmit` for a console
+    turn, inbound routing for a Telegram turn).
+  - `UserPromptSubmit` now pings the leader with `start` (a turn boundary) rather
+    than `working`; `PreToolUse` still sends `working` (the TTL heartbeat). Older
+    leaders treat `start` as `working`, so the change is backward compatible.
+- **Adopting it:** drop the "manually duplicate every answer" convention — let
+  the hook mirror the final text and use `send_message` only for buttons, files,
+  or edits. Until you do, the mirror stays dormant (the manual copy sets the
+  "spoke" flag and the mirror skips), so nothing double-posts during the switch.
+- `resolvePort` is now shared by both hooks (`hooks/port.ts`).
+
 ## 0.9.3 — 2026-07-10
 
 - **Badge no longer flips to 🟢 mid-turn.** The working-state TTL was 2 minutes;

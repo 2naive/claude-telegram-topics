@@ -4,47 +4,24 @@
 // carries no working/idle signal, so hooks are the only reliable source for
 // console-driven turns.
 //
-// Wired (hooks/hooks.json): UserPromptSubmit + PreToolUse -> "working" (the
-// second re-arms the leader's working-TTL through long turns); Stop -> "idle";
-// StopFailure -> "failed" (an API error aborted the turn — Stop and StopFailure
-// are mutually exclusive, so this cleanly flags a failed turn).
+// Wired (hooks/hooks.json): UserPromptSubmit -> "start" (turn boundary — the
+// leader resets its "spoke this turn" flag and marks working); PreToolUse ->
+// "working" (re-arms the leader's working-TTL through long turns); Stop ->
+// "idle"; StopFailure -> "failed" (an API error aborted the turn — Stop and
+// StopFailure are mutually exclusive, so this cleanly flags a failed turn).
 //
 // CONTRACT: this runs on every prompt and every tool call, so it MUST be
 // fire-and-forget — a 300ms timeout, all errors swallowed, always exit 0. It
 // must never delay or fail a turn.
 
-import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { keyFromCwd } from "../src/projectkey.ts";
+import { resolvePort } from "./port.ts";
 
-// The control port the leader listens on — env wins, else the channel .env
-// (a custom port may live only there), else the 8787 default. Mirrors
-// config.ts precedence without importing it (config.ts has load-time side
-// effects unwanted in a per-tool hook).
-function resolvePort(): number {
-  const fromEnv = process.env.TG_TOPICS_PORT?.trim();
-  if (fromEnv) return Number(fromEnv) || 8787;
-  const stateDir =
-    process.env.TG_TOPICS_STATE_DIR?.trim() ||
-    join(
-      process.env.CLAUDE_CONFIG_DIR?.trim() || join(homedir(), ".claude"),
-      "channels",
-      "telegram-topics",
-    );
-  try {
-    const env = readFileSync(join(stateDir, ".env"), "utf8");
-    const m = env.match(/^\s*TG_TOPICS_PORT\s*=\s*(\d+)/m);
-    if (m) return Number(m[1]) || 8787;
-  } catch {
-    // no .env — fall through to the default
-  }
-  return 8787;
-}
+const STATES = new Set(["start", "idle", "failed", "working"]);
 
 async function main(): Promise<void> {
   const arg = process.argv[2];
-  const state = arg === "idle" ? "idle" : arg === "failed" ? "failed" : "working";
+  const state = STATES.has(arg ?? "") ? arg! : "working";
   // CLAUDE_PROJECT_DIR is the session's project root; keyFromCwd resolves it to
   // the git top-level (the same key the leader registered), so a subdirectory
   // cwd still maps to the right topic. Falls back to process.cwd() on older

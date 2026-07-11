@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/hooks/activity.ts\" working",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/hooks/activity.ts\" start",
             "timeout": 5
           }
         ]
@@ -29,6 +29,11 @@
           {
             "type": "command",
             "command": "bun \"${CLAUDE_PLUGIN_ROOT}/hooks/activity.ts\" idle",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "bun \"${CLAUDE_PLUGIN_ROOT}/hooks/mirror.ts\"",
             "timeout": 5
           }
         ]

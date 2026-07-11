@@ -626,7 +626,10 @@ function initBot(): void {
       // on the activity hook, which may not fire for channel-injected prompts
       // (the Stop hook still returns it to ready). No-op if the topic is unmapped.
       const proj = projectForTopic(topicId);
-      if (proj) setActivity(proj, "working");
+      if (proj) {
+        spokeThisTurn.delete(proj); // new turn — the session hasn't spoken yet
+        setActivity(proj, "working");
+      }
     }
   });
 
@@ -934,6 +937,45 @@ async function withRecovery<T>(
   }
 }
 
+// A session that sent its own outbound this turn (a send_message with buttons, a
+// file, an edit) has "spoken" — the Stop auto-mirror then skips, so an
+// interactive turn is not double-posted. Reset at each turn start: the
+// UserPromptSubmit "start" ping for a console turn, inbound routing for a
+// Telegram turn. Keyed by project (the mirror arrives keyed the same way).
+const spokeThisTurn = new Set<string>();
+
+// Auto-mirror: post a session's final answer to its topic verbatim — the Stop
+// hook (mirror.ts) extracts the transcript's last assistant message and sends it
+// here. No session-label prefix: this is the console text 1:1. Best-effort — a
+// failure just means the answer stays in the console, so there is no topic
+// recreate/retry dance (unlike sendText's withRecovery).
+async function mirrorToTopic(project: string, text: string): Promise<void> {
+  const topicId = projectTopicId(project);
+  if (topicId === undefined) return;
+  stopTyping(topicId); // the reply is arriving — drop the "typing" keepalive
+  const formatted = mdToTelegram(text);
+  const chunks = splitTelegram(formatted.text, formatted.entities);
+  for (const chunk of chunks) {
+    try {
+      await bot.api.sendMessage(GROUP_CHAT_ID, chunk.text, {
+        message_thread_id: topicId,
+        entities: chunk.entities,
+      });
+    } catch (e) {
+      // Entities Telegram rejects (defensive) — deliver unformatted; any other
+      // failure ends the mirror (the console still has the text).
+      if (e instanceof GrammyError && e.error_code === 400 && chunk.entities) {
+        await bot.api
+          .sendMessage(GROUP_CHAT_ID, chunk.text, { message_thread_id: topicId })
+          .catch((e2) => log("mirror.fail", { project, error: String(e2) }));
+      } else {
+        log("mirror.fail", { project, error: String(e) });
+        return;
+      }
+    }
+  }
+}
+
 async function sendText(s: Session, text: string, options?: string[]): Promise<number> {
   stopTyping(s.topicId); // the reply is arriving — drop the "typing" keepalive
   const outText =
@@ -1033,8 +1075,27 @@ async function handle(req: Request): Promise<Response> {
     log("activity", { project: project ?? "", state: state ?? "" });
     if (project) {
       if (state === "failed") notifyTurnFailed(project);
-      else setActivity(project, state === "idle" ? "idle" : "working");
+      else if (state === "start") {
+        // Turn boundary (UserPromptSubmit) — the session hasn't spoken yet.
+        spokeThisTurn.delete(project);
+        setActivity(project, "working");
+      } else setActivity(project, state === "idle" ? "idle" : "working");
     }
+    return json({ ok: true });
+  }
+
+  // Auto-mirror the turn's final answer, sent by the Stop hook (mirror.ts) with
+  // the transcript's last assistant message. Skipped when the session already
+  // spoke this turn (buttons/file/edit) so interactive turns aren't doubled.
+  // Keyed by project, no sessionId — sits above the sid guard like /activity.
+  if (path === "/mirror" && req.method === "POST") {
+    const { project, text } = (await req.json().catch(() => ({}))) as {
+      project?: string;
+      text?: string;
+    };
+    const skipped = !project || !text || !text.trim() || spokeThisTurn.has(project);
+    log("mirror", { project: project ?? "", chars: (text ?? "").length, skipped });
+    if (!skipped) void mirrorToTopic(project!, text!);
     return json({ ok: true });
   }
 
@@ -1138,10 +1199,12 @@ async function handle(req: Request): Promise<Response> {
 
   try {
     if (path === "/send") {
+      spokeThisTurn.add(s.project); // the session spoke — the auto-mirror stands down
       const id = await sendText(s, String(body.text ?? ""), body.options as string[] | undefined);
       return json({ messageId: id });
     }
     if (path === "/sendFile") {
+      spokeThisTurn.add(s.project);
       const filePath = String(body.path);
       // Never upload channel state (the .env holds the token) even if asked —
       // the client-side guard alone would not protect a rogue local caller.
@@ -1166,6 +1229,7 @@ async function handle(req: Request): Promise<Response> {
       return json({ ok: true });
     }
     if (path === "/edit") {
+      spokeThisTurn.add(s.project); // managing its own Telegram message — mirror stands down
       const messageId = Number(body.messageId);
       if (topicForSentMessage(messageId) !== s.topicId) {
         return json({ error: "message not in this session's topic" }, 403);
