@@ -52,3 +52,42 @@ test("survives blank and non-JSON lines", () => {
 test("empty input yields empty string", () => {
   expect(lastAssistantText("")).toBe("");
 });
+
+// --- turn-boundary bounding (0.10.1): never mirror a stale prior-turn answer ---
+
+const userPrompt = (t: string) => line({ type: "user", message: { content: t } });
+const toolResult = () =>
+  line({ type: "user", message: { content: [{ type: "tool_result", content: "ok" }] } });
+
+test("a turn that produced no text returns '' — not the previous turn's answer", () => {
+  const jsonl = [
+    userPrompt("q1"),
+    asst([text("ANSWER ONE")]),
+    userPrompt("q2"),
+    asst([tool("Bash")]), // turn 2 ends on a tool call, no final text
+    toolResult(),
+  ].join("\n");
+  expect(lastAssistantText(jsonl)).toBe("");
+});
+
+test("returns the CURRENT turn's answer, not an earlier turn's", () => {
+  const jsonl = [
+    userPrompt("q1"),
+    asst([text("ANSWER ONE")]),
+    userPrompt("q2"),
+    asst([text("Checking."), tool("Read")]),
+    toolResult(),
+    asst([text("ANSWER TWO")]),
+  ].join("\n");
+  expect(lastAssistantText(jsonl)).toBe("ANSWER TWO");
+});
+
+test("a tool_result user entry is not treated as a turn boundary", () => {
+  const jsonl = [userPrompt("q"), asst([tool("Read")]), toolResult(), asst([text("Done.")])].join("\n");
+  expect(lastAssistantText(jsonl)).toBe("Done.");
+});
+
+test("whitespace-only final text returns '' (not the prior turn)", () => {
+  const jsonl = [userPrompt("q1"), asst([text("REAL")]), userPrompt("q2"), asst([text("   ")])].join("\n");
+  expect(lastAssistantText(jsonl)).toBe("");
+});

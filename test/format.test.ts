@@ -239,6 +239,127 @@ describe("mdToTelegram", () => {
   });
 });
 
+describe("mdToTelegram hardening (0.10.1)", () => {
+  test("GFM table becomes one aligned monospace pre block, every cell kept", () => {
+    const r = mdToTelegram(
+      "| Name | Age | City |\n| ---- | --- | ---- |\n| Alice | 30 | NYC |\n| Bob | 25 | LA |",
+    );
+    expect(r.entities).toEqual([{ type: "pre", offset: 0, length: r.text.length }]);
+    for (const cell of ["Name", "Age", "City", "Alice", "30", "NYC", "Bob", "25", "LA"]) {
+      expect(r.text).toContain(cell);
+    }
+    expect(r.text).not.toContain("|---"); // the separator row is dropped
+    // columns aligned: header names padded to their column width
+    expect(r.text.split("\n")[0]).toBe("Name  | Age | City");
+  });
+
+  test("a stray * in a table cell does not italicize across rows", () => {
+    const r = mdToTelegram("| C1 | C2 |\n| -- | -- |\n| *foo | bar |\n| baz | qux* |");
+    expect((r.entities ?? []).some((e) => e.type === "italic")).toBe(false);
+    expect(r.text).toContain("*foo");
+    expect(r.text).toContain("qux*");
+  });
+
+  test("an escaped pipe in a table cell is a literal pipe, no backslash", () => {
+    const r = mdToTelegram("| Expr | R |\n| ---- | - |\n| a \\| b | or |");
+    expect(r.text).not.toContain("\\");
+    expect(r.text).toContain("a | b");
+  });
+
+  test("a bare --- rule or prose dash is not treated as a table", () => {
+    expect(mdToTelegram("text\n---\nmore").entities).toBeUndefined();
+    expect(mdToTelegram("a - b - c").entities).toBeUndefined();
+  });
+
+  test("a stray ``` inside a fence body no longer cascades into later blocks", () => {
+    const r = mdToTelegram('Here:\n```py\nprint("```")\n```\nAnd:\n```sh\nls\n```');
+    const pre = (r.entities ?? []).filter((e) => e.type === "pre");
+    expect(pre.length).toBe(2);
+    expect(r.text).toContain('print("```")');
+    expect(r.text).toContain("ls");
+  });
+
+  test("four-backtick fence keeps an inner triple-backtick verbatim", () => {
+    const r = mdToTelegram("````js\ncode ``` inside\n````");
+    expect(r.text).toBe("code ``` inside");
+    expect(r.entities).toEqual([{ type: "pre", offset: 0, length: 15, language: "js" }]);
+  });
+
+  test("a pathological info-string is capped to 64 chars", () => {
+    const r = mdToTelegram("```" + "x".repeat(5000) + "\nbody\n```");
+    const pre = (r.entities ?? []).find((e) => e.type === "pre") as { language?: string };
+    expect(pre.language!.length).toBeLessThanOrEqual(64);
+  });
+
+  test("emoji/symbol/astral-led emphasis opens (was leaking literal markers)", () => {
+    expect(mdToTelegram("**✅ Done**")).toEqual({ text: "✅ Done", entities: [{ type: "bold", offset: 0, length: 6 }] });
+    expect(mdToTelegram("note _😀 hi_ end").entities).toEqual([{ type: "italic", offset: 5, length: 5 }]);
+    expect(mdToTelegram("**𠀀𠀁**").entities).toEqual([{ type: "bold", offset: 0, length: 4 }]);
+  });
+
+  test("a URL with a balanced paren keeps its closing paren", () => {
+    const r = mdToTelegram("see [Turing](https://en.wikipedia.org/wiki/Alan_Turing_(scientist)) here");
+    expect(r.entities).toEqual([
+      { type: "text_link", offset: 4, length: 6, url: "https://en.wikipedia.org/wiki/Alan_Turing_(scientist)" },
+    ]);
+    expect(r.text).toBe("see Turing here");
+  });
+
+  test("an image drops the ! and links the alt text", () => {
+    const r = mdToTelegram("![a cat](https://x.io/cat.png)");
+    expect(r.text).toBe("a cat");
+    expect(r.entities).toEqual([{ type: "text_link", offset: 0, length: 5, url: "https://x.io/cat.png" }]);
+  });
+
+  test("an autolink drops the angle brackets", () => {
+    const r = mdToTelegram("Docs at <https://example.com/docs>.");
+    expect(r.text).toBe("Docs at https://example.com/docs.");
+    expect(r.entities).toEqual([{ type: "text_link", offset: 8, length: 24, url: "https://example.com/docs" }]);
+  });
+
+  test("an empty-bodied link shows and links the URL instead of dropping it", () => {
+    const r = mdToTelegram("before [****](https://ex.com) after");
+    const link = (r.entities ?? []).find((e) => e.type === "text_link") as { url?: string };
+    expect(link?.url).toBe("https://ex.com");
+    expect(r.text).toContain("https://ex.com");
+  });
+
+  test("Vec<T> and a lone < stay literal (no autolink false positive)", () => {
+    expect(mdToTelegram("Vec<T> and a < b").entities).toBeUndefined();
+  });
+
+  test("C0 control characters are stripped so a NUL cannot 400-drop the answer", () => {
+    const r = mdToTelegram("he" + String.fromCharCode(0) + "llo\tworld");
+    expect(r.text).toBe("hello\tworld"); // NUL gone, tab kept
+  });
+
+  test("a UNC path keeps its doubled backslashes", () => {
+    const r = mdToTelegram("copy \\\\server\\share\\file to C:\\Users");
+    expect(r.text).toBe("copy \\\\server\\share\\file to C:\\Users");
+    expect(r.entities).toBeUndefined();
+  });
+
+  test("a whitespace-only render falls back to raw input", () => {
+    const r = mdToTelegram("# \n```\n```");
+    expect(r.text.trim().length).toBeGreaterThan(0);
+  });
+
+  test("oversized input is delivered raw (never freezes the leader)", () => {
+    const big = "a".repeat(60_000);
+    const r = mdToTelegram(big);
+    expect(r.text).toBe(big);
+    expect(r.entities).toBeUndefined();
+  });
+
+  test("marker/bracket storms stay near-linear (no quadratic blowup)", () => {
+    for (const s of ["[".repeat(200_000), "*a ".repeat(50_000), "**a".repeat(50_000)]) {
+      const t = performance.now();
+      mdToTelegram(s);
+      expect(performance.now() - t).toBeLessThan(1000);
+    }
+  });
+});
+
 describe("splitTelegram entity cap and surrogate safety", () => {
   test("each chunk gets its own 100-entity budget", () => {
     // 120 links, short labels so the text fits one 4096 chunk: without the
@@ -302,5 +423,13 @@ describe("splitTelegram", () => {
   test("an unbreakable long line still splits hard at the limit", () => {
     const chunks = splitTelegram("a".repeat(25), undefined, 10);
     expect(chunks.map((c) => c.text)).toEqual(["a".repeat(10), "a".repeat(10), "a".repeat(5)]);
+  });
+
+  test("a whitespace-only chunk is dropped, real chunks survive", () => {
+    const chunks = splitTelegram("Start.\n" + " ".repeat(4200) + "\nEnd.", undefined);
+    expect(chunks.every((c) => c.text.trim().length > 0)).toBe(true);
+    const joined = chunks.map((c) => c.text).join("\n");
+    expect(joined).toContain("Start.");
+    expect(joined).toContain("End.");
   });
 });

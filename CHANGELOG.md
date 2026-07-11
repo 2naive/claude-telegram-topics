@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.10.1 — 2026-07-11
+
+Auto-mirror content-hardening — an adversarial audit (10 content categories,
+each run through the real formatter, 31 verified findings) closed the ways a
+mirrored answer could arrive mangled, empty, or silently dropped. Because manual
+duplication is now off, the mirror is the only phone copy, so these matter.
+
+- **Failures are now visible and never truncate the answer.** A mid-stream send
+  error no longer aborts the rest of the message; every non-recoverable failure
+  posts a cooldown-guarded `⚠️ ответ зеркалирован не полностью (k/N)` notice, and
+  a deleted/closed topic is recreated and retried (the mirror path had no
+  recovery). Rejected entities fall back to plain text. Delivery is split into a
+  pure, unit-tested orchestrator (`src/mirror.ts`).
+- **Tables are adapted.** GFM tables — which Telegram can't render and which used
+  to arrive as a wall of pipes — become an aligned monospace grid in one `pre`
+  block (columns padded, every cell preserved, `\|` handled). This also fixes a
+  stray `*` in a cell italicizing across rows.
+- **Code fences no longer cascade.** A stray ` ``` ` inside a fenced block used to
+  re-pair with the next block and corrupt everything after it; a length-aware
+  line scanner handles ` ``` `/` ```` ` fences correctly and caps the info-string.
+- **Emoji/symbol-led emphasis opens** (`**✅ Done**`, `_😀 note_`, astral) instead
+  of leaking literal `**`.
+- **Link fixes:** URLs with a balanced paren keep their `)`
+  (`…_(disambiguation)`), images `![alt](url)` drop the `!`, `<https://…>`
+  autolinks drop the brackets, and an empty-bodied link shows its URL.
+- **Robustness:** C0 control chars (a NUL would 400-drop the whole answer) are
+  stripped; a whitespace-only render/chunk falls back instead of sending an empty
+  message Telegram rejects; the inline scanner is de-quadratic'd and guards
+  oversized input (a 200k `[` storm went from seconds to <1ms — it ran
+  synchronously and froze the single-threaded leader); a huge answer is attached
+  as a `.md` file instead of flooding the topic with pushes; a re-fired Stop
+  won't double-post; and the transcript reader is bounded to the current turn so
+  a tool-only/interrupted turn can't mirror the previous turn's answer.
+- UNC paths (`\\server\share`) keep their doubled backslashes.
+
 ## 0.10.0 — 2026-07-11
 
 - **Console → Telegram auto-mirror.** The turn's final answer is posted to the

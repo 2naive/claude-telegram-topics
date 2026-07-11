@@ -60,6 +60,7 @@ import {
   trackSent,
 } from "./sent.ts";
 import { mdToTelegram, splitTelegram } from "./format.ts";
+import { mirrorChunks, type MirrorIO } from "./mirror.ts";
 import { apiRetry } from "./tgretry.ts";
 import {
   autostartEnabled,
@@ -628,6 +629,7 @@ function initBot(): void {
       const proj = projectForTopic(topicId);
       if (proj) {
         spokeThisTurn.delete(proj); // new turn — the session hasn't spoken yet
+        lastMirrored.delete(proj);
         setActivity(proj, "working");
       }
     }
@@ -944,36 +946,95 @@ async function withRecovery<T>(
 // Telegram turn. Keyed by project (the mirror arrives keyed the same way).
 const spokeThisTurn = new Set<string>();
 
+// Above this many chunks the mirror stops push-flooding the topic: it sends one
+// preview message and attaches the full answer as a .md file (one notification).
+const MIRROR_MAX_CHUNKS = 4;
+// Last text mirrored per project, so a re-fired Stop (stop_hook_active) does not
+// double-post identical text. Cleared at each turn start.
+const lastMirrored = new Map<string, string>();
+// Cooldown for the "mirror incomplete" notice, so a persistent outage does not
+// itself flood the topic.
+const lastMirrorNotice = new Map<number, number>();
+
+// Recreate a deleted/closed topic for a project (the mirror path has no Session
+// to hand to withRecovery), migrating every session bound to the dead topic.
+async function recoverMirrorTopic(project: string, old: number): Promise<number> {
+  const fresh = await recreateTopic(bot.api, project);
+  const set = topicSessions.get(old);
+  if (set) {
+    for (const sid of set) {
+      const other = sessions.get(sid);
+      if (other) other.topicId = fresh;
+      bindTopic(sid, fresh);
+    }
+    topicSessions.delete(old);
+  }
+  return fresh;
+}
+
+function notifyMirrorGap(topicId: number, sent: number, total: number): void {
+  const now = Date.now();
+  if (now - (lastMirrorNotice.get(topicId) ?? 0) < FAILURE_NOTICE_COOLDOWN_MS) return;
+  lastMirrorNotice.set(topicId, now);
+  void bot.api
+    .sendMessage(
+      GROUP_CHAT_ID,
+      `⚠️ ответ зеркалирован не полностью (${sent}/${total} частей) — полный текст в консоли.`,
+      { message_thread_id: topicId },
+    )
+    .catch(() => {});
+}
+
 // Auto-mirror: post a session's final answer to its topic verbatim — the Stop
 // hook (mirror.ts) extracts the transcript's last assistant message and sends it
-// here. No session-label prefix: this is the console text 1:1. Best-effort — a
-// failure just means the answer stays in the console, so there is no topic
-// recreate/retry dance (unlike sendText's withRecovery).
+// here. No session-label prefix: this is the console text 1:1. Because manual
+// duplication is OFF, this is the ONLY phone copy, so a failure must be VISIBLE
+// (a cooldown-guarded ⚠️ notice), the tail must not be dropped on a mid-stream
+// error, and a deleted topic is recovered like sendText's withRecovery.
 async function mirrorToTopic(project: string, text: string): Promise<void> {
-  const topicId = projectTopicId(project);
+  let topicId = projectTopicId(project);
   if (topicId === undefined) return;
+  // Idempotent against a re-fired Stop delivering byte-identical text.
+  if (lastMirrored.get(project) === text) return;
+  lastMirrored.set(project, text);
   stopTyping(topicId); // the reply is arriving — drop the "typing" keepalive
+
   const formatted = mdToTelegram(text);
-  const chunks = splitTelegram(formatted.text, formatted.entities);
-  for (const chunk of chunks) {
-    try {
-      await bot.api.sendMessage(GROUP_CHAT_ID, chunk.text, {
-        message_thread_id: topicId,
-        entities: chunk.entities,
-      });
-    } catch (e) {
-      // Entities Telegram rejects (defensive) — deliver unformatted; any other
-      // failure ends the mirror (the console still has the text).
-      if (e instanceof GrammyError && e.error_code === 400 && chunk.entities) {
-        await bot.api
-          .sendMessage(GROUP_CHAT_ID, chunk.text, { message_thread_id: topicId })
-          .catch((e2) => log("mirror.fail", { project, error: String(e2) }));
-      } else {
-        log("mirror.fail", { project, error: String(e) });
-        return;
-      }
-    }
-  }
+  const chunks = splitTelegram(formatted.text, formatted.entities).filter((c) => c.text.trim());
+  if (chunks.length === 0) return;
+
+  const io: MirrorIO = {
+    send: (t, entities, notify) =>
+      bot.api
+        .sendMessage(GROUP_CHAT_ID, t, {
+          message_thread_id: topicId,
+          entities,
+          disable_notification: !notify,
+        })
+        .then(() => {}),
+    attach: (full, n) =>
+      bot.api
+        .sendDocument(GROUP_CHAT_ID, new InputFile(new TextEncoder().encode(full), "answer.md"), {
+          message_thread_id: topicId,
+          caption: `… полный ответ вложением (${n} частей)`,
+          disable_notification: true,
+        })
+        .then(() => {}),
+    recover: async () => {
+      topicId = await recoverMirrorTopic(project, topicId!);
+    },
+    classify: (e) =>
+      isThreadGone(e)
+        ? "thread-gone"
+        : e instanceof GrammyError && e.error_code === 400
+          ? "retry-plain"
+          : "fatal",
+    onFail: (e) => log("mirror.fail", { project, error: String(e) }),
+    notifyGap: (sent, total) => {
+      if (topicId !== undefined) notifyMirrorGap(topicId, sent, total);
+    },
+  };
+  await mirrorChunks(chunks, text, MIRROR_MAX_CHUNKS, io);
 }
 
 async function sendText(s: Session, text: string, options?: string[]): Promise<number> {
@@ -1076,8 +1137,10 @@ async function handle(req: Request): Promise<Response> {
     if (project) {
       if (state === "failed") notifyTurnFailed(project);
       else if (state === "start") {
-        // Turn boundary (UserPromptSubmit) — the session hasn't spoken yet.
+        // Turn boundary (UserPromptSubmit) — the session hasn't spoken yet, and
+        // a fresh answer may legitimately repeat the previous one.
         spokeThisTurn.delete(project);
+        lastMirrored.delete(project);
         setActivity(project, "working");
       } else setActivity(project, state === "idle" ? "idle" : "working");
     }
