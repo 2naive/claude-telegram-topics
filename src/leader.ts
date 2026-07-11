@@ -631,6 +631,7 @@ function initBot(): void {
         spokeThisTurn.delete(proj); // new turn — the session hasn't spoken yet
         lastMirrored.delete(proj);
         setActivity(proj, "working");
+        checkHookless(proj, topicId); // warn if this session has no auto-mirror
       }
     }
   });
@@ -956,6 +957,52 @@ const lastMirrored = new Map<string, string>();
 // itself flood the topic.
 const lastMirrorNotice = new Map<number, number>();
 
+// Projects whose session has ever reported an activity ping or a mirror POST —
+// i.e. its plugin is new enough to carry the working/idle + auto-mirror hooks.
+// A long-running session started before those hooks existed never appears here,
+// so with manual duplication turned off its answers would silently never reach
+// the topic. We detect that and warn (once, per topic) instead of losing them.
+const hookedProjects = new Set<string>();
+const HOOKLESS_GRACE_MS = 60_000; // a real hook fires well within this
+const HOOKLESS_WARN_COOLDOWN_MS = 60 * 60_000;
+const hooklessTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const hooklessWarned = new Map<number, number>();
+
+// Any hook POST (activity or mirror) proves the session carries the hooks.
+function markHooked(project: string): void {
+  hookedProjects.add(project);
+  const t = hooklessTimers.get(project);
+  if (t) {
+    clearTimeout(t);
+    hooklessTimers.delete(project);
+  }
+}
+
+// A Telegram turn was routed to a live session on this project. If no hook POST
+// arrives within a grace window, its plugin predates auto-mirror — the answer
+// will never appear in the topic, so warn the user to restart the session.
+// (Only Telegram-driven turns are observable to the leader; a console-driven
+// hookless turn is invisible here — restarting the session is the real fix.)
+function checkHookless(project: string, topicId: number): void {
+  if (hookedProjects.has(project) || hooklessTimers.has(project)) return;
+  const timer = setTimeout(() => {
+    hooklessTimers.delete(project);
+    if (hookedProjects.has(project)) return;
+    const now = Date.now();
+    if (now - (hooklessWarned.get(topicId) ?? 0) < HOOKLESS_WARN_COOLDOWN_MS) return;
+    hooklessWarned.set(topicId, now);
+    void bot.api
+      .sendMessage(
+        GROUP_CHAT_ID,
+        "⚠️ This session is running a plugin version without auto-mirror — Claude's answers are NOT mirrored to this topic. Restart the project in a new session to enable auto-mirror.",
+        { message_thread_id: topicId },
+      )
+      .catch(() => {});
+  }, HOOKLESS_GRACE_MS);
+  timer.unref?.();
+  hooklessTimers.set(project, timer);
+}
+
 // Recreate a deleted/closed topic for a project (the mirror path has no Session
 // to hand to withRecovery), migrating every session bound to the dead topic.
 async function recoverMirrorTopic(project: string, old: number): Promise<number> {
@@ -979,7 +1026,7 @@ function notifyMirrorGap(topicId: number, sent: number, total: number): void {
   void bot.api
     .sendMessage(
       GROUP_CHAT_ID,
-      `⚠️ ответ зеркалирован не полностью (${sent}/${total} частей) — полный текст в консоли.`,
+      `⚠️ Answer only partially mirrored (${sent}/${total} parts) — the full text is in the console.`,
       { message_thread_id: topicId },
     )
     .catch(() => {});
@@ -1016,7 +1063,7 @@ async function mirrorToTopic(project: string, text: string): Promise<void> {
       bot.api
         .sendDocument(GROUP_CHAT_ID, new InputFile(new TextEncoder().encode(full), "answer.md"), {
           message_thread_id: topicId,
-          caption: `… полный ответ вложением (${n} частей)`,
+          caption: `… full answer attached (${n} parts)`,
           disable_notification: true,
         })
         .then(() => {}),
@@ -1135,6 +1182,7 @@ async function handle(req: Request): Promise<Response> {
     };
     log("activity", { project: project ?? "", state: state ?? "" });
     if (project) {
+      markHooked(project); // this session carries the hooks
       if (state === "failed") notifyTurnFailed(project);
       else if (state === "start") {
         // Turn boundary (UserPromptSubmit) — the session hasn't spoken yet, and
@@ -1156,6 +1204,7 @@ async function handle(req: Request): Promise<Response> {
       project?: string;
       text?: string;
     };
+    if (project) markHooked(project); // a mirror POST proves the hook is present
     const skipped = !project || !text || !text.trim() || spokeThisTurn.has(project);
     log("mirror", { project: project ?? "", chars: (text ?? "").length, skipped });
     if (!skipped) void mirrorToTopic(project!, text!);
@@ -1605,6 +1654,8 @@ export function stopLeader(): void {
   statusTimers.clear();
   for (const t of activityTimers.values()) clearTimeout(t);
   activityTimers.clear();
+  for (const t of hooklessTimers.values()) clearTimeout(t);
+  hooklessTimers.clear();
   if (reaperTimer) {
     clearInterval(reaperTimer);
     reaperTimer = null;

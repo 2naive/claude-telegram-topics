@@ -112,7 +112,7 @@ function findClose(src: string, from: number, marker: string, len: number): numb
     // Content must not end on whitespace. A single `*`/`_` additionally
     // requires a letter/digit or emoji/symbol right before it: `(*a)*(*b)`,
     // `a[*]` and other code shapes otherwise close on a `)`/`]`. A double
-    // `**`/`~~` is lax here so `**Заголовок:**` (trailing colon) still bolds.
+    // `**`/`~~` is lax here so `**Heading:**` (trailing colon) still bolds.
     if (
       len === 1
         ? !(isAlnum(src[j - 1]) || isContentEnd(src[j - 1]))

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.10.2 — 2026-07-11
+
+- **Hookless-session warning.** Plugin hooks load at session start, so a session
+  started before the auto-mirror hook existed fires no mirror — and with manual
+  duplication now off, its answers would silently never reach the topic (a green
+  badge and no reply). The leader now detects this: when a Telegram-routed turn
+  on a project produces no hook activity within a grace window, it posts a
+  one-time (per topic, hourly) notice to restart that session. Restarting loads
+  the hook and enables auto-mirror. (A console-driven hookless turn is invisible
+  to the leader, so restarting a pre-0.10.0 session is the real fix.)
+- All plugin-emitted notices are English (a few new ones were briefly Russian).
+
 ## 0.10.1 — 2026-07-11
 
 Auto-mirror content-hardening — an adversarial audit (10 content categories,
@@ -9,7 +21,7 @@ duplication is now off, the mirror is the only phone copy, so these matter.
 
 - **Failures are now visible and never truncate the answer.** A mid-stream send
   error no longer aborts the rest of the message; every non-recoverable failure
-  posts a cooldown-guarded `⚠️ ответ зеркалирован не полностью (k/N)` notice, and
+  posts a cooldown-guarded `⚠️ Answer only partially mirrored (k/N)` notice, and
   a deleted/closed topic is recreated and retried (the mirror path had no
   recovery). Rejected entities fall back to plain text. Delivery is split into a
   pure, unit-tested orchestrator (`src/mirror.ts`).
@@ -163,7 +175,7 @@ Formatting fidelity (second fuzz pass on the entity converter):
   loses its backslash — `\_` is treated as a literal path, not a markdown
   escape, and a `_` opens emphasis only after a real boundary (start,
   whitespace, opening bracket/quote), never after `\` or a word char.
-- **Non-ASCII fenced languages**: ` ```питон ` (any non-ASCII info-string) now
+- **Non-ASCII fenced languages**: a Cyrillic/CJK info-string (any non-ASCII) now
   fences instead of leaking backtick markers.
 - **Stacked delimiters nest fully**: `**_bold italic_**` and
   `~~**_all three_**~~` emit the full set of overlapping entities with no
