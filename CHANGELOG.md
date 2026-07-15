@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.11.0 — 2026-07-15
+
+- **Relaunches resume the conversation.** When a project session is brought back
+  — autostart on an inbound message, or the "▶️ Start session" button — the
+  launch now appends `--continue`, so the session picks up its most recent
+  conversation in that directory instead of starting blank. This is the recovery
+  path after a reboot or crash killed a long-running session: message the topic
+  (or tap Start) and the same conversation resumes. A brand-new `/start <path>`
+  still starts fresh. An operator `TG_TOPICS_LAUNCH_CMD` that already selects a
+  conversation (`-c`/`--continue`/`-r`/`--resume`) is left untouched.
+
 ## 0.10.2 — 2026-07-11
 
 - **Hookless-session warning.** Plugin hooks load at session start, so a session

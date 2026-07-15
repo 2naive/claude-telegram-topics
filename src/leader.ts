@@ -158,7 +158,8 @@ async function postNoSessionNotice(topicId: number, project: string): Promise<vo
   lastNotice.set(topicId, now);
   let note = "📴 No active session for this project — message queued.";
   if (autostartEnabled()) {
-    const err = spawnSession(project, topicName(project));
+    // Known project waking up (reboot/crash recovery) — resume its conversation.
+    const err = spawnSession(project, topicName(project), true);
     note = err
       ? `📴 No active session — message queued. Autostart failed: ${err}`
       : "📴 No active session — message queued. 🚀 Starting one…";
@@ -672,7 +673,8 @@ function initBot(): void {
           .catch(() => {});
         return;
       }
-      const err = spawnSession(project, topicName(project));
+      // A known project (already bridged) — resume its most recent conversation.
+      const err = spawnSession(project, topicName(project), true);
       log("session.start.tap", { project, error: err ?? "" });
       await ctx
         .answerCallbackQuery({

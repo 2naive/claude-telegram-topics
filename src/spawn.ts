@@ -15,8 +15,21 @@ import { normalizePath } from "./paths.ts";
 export const DEFAULT_LAUNCH_CMD =
   "claude --permission-mode auto --dangerously-load-development-channels plugin:telegram-topics@claude-telegram-topics";
 
-export function launchCommand(): string {
-  return process.env.TG_TOPICS_LAUNCH_CMD?.trim() || DEFAULT_LAUNCH_CMD;
+// Already selects a conversation? Then don't append our own --continue.
+const SELECTS_CONVERSATION = /(^|\s)(-c|--continue|-r|--resume)(\s|$)/;
+
+/**
+ * The launch command line. When `resume` is true (relaunching a project that
+ * already ran — reboot/crash recovery, the autostart and "Start session"
+ * paths), append `--continue` so the session picks up its most recent
+ * conversation in that directory instead of starting blank. A brand-new
+ * `/start <path>` passes resume=false and starts fresh. If the operator's
+ * custom TG_TOPICS_LAUNCH_CMD already selects a conversation, it's left alone.
+ */
+export function launchCommand(resume = false): string {
+  const base = process.env.TG_TOPICS_LAUNCH_CMD?.trim() || DEFAULT_LAUNCH_CMD;
+  if (!resume || SELECTS_CONVERSATION.test(base)) return base;
+  return `${base} --continue`;
 }
 
 export function autostartEnabled(): boolean {
@@ -81,11 +94,15 @@ export function buildStartLine(title: string, cmd: string): string {
  * passed as the spawn cwd (not interpolated into the command line), so a path
  * with shell metacharacters cannot inject.
  */
-export function spawnSession(projectPath: string, name: string): string | null {
+export function spawnSession(
+  projectPath: string,
+  name: string,
+  resume = false,
+): string | null {
   if (process.platform !== "win32") {
     return "session launch is only supported on Windows for now — start one manually on the machine";
   }
-  const cmd = launchCommand();
+  const cmd = launchCommand(resume);
   try {
     const line = buildStartLine(windowTitle(name), cmd);
     Bun.spawn(["cmd", "/c", line], {
@@ -94,7 +111,7 @@ export function spawnSession(projectPath: string, name: string): string | null {
       stdout: "ignore",
       stderr: "ignore",
     });
-    log("session.spawn", { project: projectPath, cmd });
+    log("session.spawn", { project: projectPath, cmd, resume });
     return null;
   } catch (e) {
     log("session.spawn.fail", { project: projectPath, error: String(e) });

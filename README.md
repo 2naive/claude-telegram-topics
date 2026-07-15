@@ -101,7 +101,7 @@ All optional, set in the `.env` (or the environment):
 | `TG_TOPICS_PORT` | Loopback control port (default `8787` — also wrangler dev's default; change it if anything else uses 8787). Must be the same for **all** sessions. |
 | `TG_TOPICS_STATE_DIR` | Relocate the whole state dir (default `~/.claude/channels/telegram-topics`). **Environment-only** — it locates the `.env`, so it cannot be set *inside* it; and remote-launched sessions won't inherit it unless it is exported in the machine's environment. |
 | `TG_TOPICS_SESSION_NAME` | Override the topic title for sessions started in this environment. |
-| `TG_TOPICS_LAUNCH_CMD` | Command used by remote session launch (`/start`, autostart). Default: `claude --permission-mode auto --dangerously-load-development-channels plugin:telegram-topics@claude-telegram-topics`. |
+| `TG_TOPICS_LAUNCH_CMD` | Command used by remote session launch (`/start`, autostart). Default: `claude --permission-mode auto --dangerously-load-development-channels plugin:telegram-topics@claude-telegram-topics`. On a **relaunch** of a known project (autostart / Start-session button) `--continue` is appended so the conversation resumes; a new `/start <path>` starts fresh. If your custom command already selects a conversation (`-c`/`--continue`/`-r`/`--resume`), it's left as-is. |
 | `TG_TOPICS_AUTOSTART` | `1` = when a message arrives for a project with no live session, launch one automatically (Windows only) instead of offering a button. |
 | `TG_TOPICS_LAUNCH_ROOTS` | Semicolon-separated trusted directories under which `/start <path>` may launch a **brand-new** project (one not yet in `topics.json`). **Default-deny**: unset = launch-by-path disabled. Launching an arbitrary path named in a chat message is remote code-exec, so keep this confined to roots you trust (e.g. `C:\Users\you\code`). |
 | `TG_TOPICS_STATUS_ICONS` | Topic-name status badge — the only per-topic signal visible in the topic **list**: ⏳ working · 🟢 ready · 🔔 needs you (permission prompt) · 📥 queued (no session) · 💤 no session. Working/idle comes from the plugin's activity hooks (`hooks/hooks.json`, auto-active). On by default; set `0` to keep topic names unbadged. |
@@ -242,10 +242,12 @@ You never have to guess whether the bridge is alive:
   alike.
 - **No live session?** Your message is **queued** (up to 20 messages / 30 min)
   and the topic gets a `📴 No active session` notice with a **▶️ Start session**
-  button. Tap it and the leader launches a new Claude Code session for that
-  project on the machine (a console window running `TG_TOPICS_LAUNCH_CMD`);
-  once it registers, the queued messages are delivered to it. Set
-  `TG_TOPICS_AUTOSTART=1` to skip the button and launch automatically.
+  button. Tap it and the leader relaunches the session for that project on the
+  machine (a console window running `TG_TOPICS_LAUNCH_CMD`) and **resumes its
+  most recent conversation** (`--continue`) — the recovery path after a reboot
+  or crash. Once it registers, the queued messages are delivered to it. Set
+  `TG_TOPICS_AUTOSTART=1` to skip the button and relaunch automatically on the
+  next inbound message. (A brand-new `/start <path>` starts fresh instead.)
 - **`/start`** (anywhere, incl. General) — bare `/start` lists already-bridged
   projects as buttons (up to 20); tap one to launch a session. `/start <path>`
   bridges **and** launches a project not yet in `topics.json` — but only when

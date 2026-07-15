@@ -66,4 +66,30 @@ describe("launchCommand", () => {
     // preload deletes TG_TOPICS_LAUNCH_CMD, so this is the default path.
     expect(launchCommand()).toContain("--dangerously-load-development-channels");
   });
+
+  test("fresh start (resume=false) does not add --continue", () => {
+    expect(launchCommand()).not.toContain("--continue");
+    expect(launchCommand(false)).not.toContain("--continue");
+  });
+
+  test("resume start appends --continue for recovery", () => {
+    const cmd = launchCommand(true);
+    expect(cmd).toContain("--dangerously-load-development-channels");
+    expect(cmd.endsWith("--continue")).toBe(true);
+  });
+
+  test("resume does not double-select when the base already resumes", () => {
+    const prev = process.env.TG_TOPICS_LAUNCH_CMD;
+    try {
+      process.env.TG_TOPICS_LAUNCH_CMD = "claude --continue --permission-mode auto";
+      expect(launchCommand(true)).toBe("claude --continue --permission-mode auto");
+      process.env.TG_TOPICS_LAUNCH_CMD = "claude -r 1234 --model opus";
+      expect(launchCommand(true)).toBe("claude -r 1234 --model opus");
+      process.env.TG_TOPICS_LAUNCH_CMD = "claude --resume";
+      expect(launchCommand(true)).toBe("claude --resume");
+    } finally {
+      if (prev === undefined) delete process.env.TG_TOPICS_LAUNCH_CMD;
+      else process.env.TG_TOPICS_LAUNCH_CMD = prev;
+    }
+  });
 });
