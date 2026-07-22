@@ -120,6 +120,12 @@ export function spawnSession(
       stdin: "ignore",
       stdout: "ignore",
       stderr: "ignore",
+      // The composed line must reach cmd VERBATIM. Bun's default Windows arg
+      // encoding escapes embedded quotes C-runtime-style (\") — which cmd.exe
+      // does not understand, so `start "tg_x" …` arrived as `start \"tg_x\" …`
+      // and start resolved the PROGRAM to `\tg_x\` ("Windows cannot find
+      // '\tg_x\'" popup, nothing launched, queued messages expired).
+      windowsVerbatimArguments: true,
     });
     log("session.spawn", { project: projectPath, cmd, resume });
     return null;

@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test, spyOn } from "bun:test";
 import {
   buildStartLine,
   windowTitle,
@@ -6,6 +6,7 @@ import {
   isPathAllowed,
   projectNameFromPath,
   launchRoots,
+  spawnSession,
 } from "../src/spawn.ts";
 
 describe("isPathAllowed (launch-by-path gate)", () => {
@@ -59,6 +60,62 @@ describe("buildStartLine", () => {
     expect(line).toBe('start "tg_foo" cmd /k claude --x');
     expect(line.startsWith('start "')).toBe(true);
   });
+});
+
+describe("windows arg passing (the \"Windows cannot find '\\tg_…\\'\" popup)", () => {
+  // Bun's default Windows arg encoding escapes embedded quotes C-runtime-style
+  // (\") — cmd.exe does not understand that, so the quoted window title reached
+  // `start` as `\"tg_x\"` and start resolved the PROGRAM to `\tg_x\`: an error
+  // popup and no session. spawnSession must pass the line VERBATIM.
+  test.if(process.platform === "win32")(
+    "verbatim spawn delivers embedded quotes to cmd intact",
+    async () => {
+      const line = 'echo PROBE "tg_title" tail';
+      const p = Bun.spawn(["cmd", "/c", line], {
+        stdout: "pipe",
+        stderr: "ignore",
+        windowsVerbatimArguments: true,
+      });
+      const out = await new Response(p.stdout).text();
+      expect(out).toContain('PROBE "tg_title" tail');
+      expect(out).not.toContain('\\"');
+    },
+  );
+
+  test.if(process.platform === "win32")(
+    "default (non-verbatim) spawn mangles them — the regression this pins",
+    async () => {
+      const line = 'echo PROBE "tg_title" tail';
+      const p = Bun.spawn(["cmd", "/c", line], {
+        stdout: "pipe",
+        stderr: "ignore",
+      });
+      const out = await new Response(p.stdout).text();
+      // If a future Bun stops mangling, this fails and the verbatim flag can
+      // be revisited; until then it documents WHY the flag is load-bearing.
+      expect(out).toContain('\\"tg_title\\"');
+    },
+  );
+
+  test.if(process.platform === "win32")(
+    "spawnSession passes the start line verbatim — pins the fix itself",
+    () => {
+      // The two probes above pin Bun's ENCODING; this pins OUR call: without
+      // it, deleting windowsVerbatimArguments from spawnSession leaves the
+      // whole suite green while reproducing the live popup (mutation-tested).
+      const spy = spyOn(Bun, "spawn").mockReturnValue({} as never);
+      try {
+        expect(spawnSession("C:\\proj\\x", "x", true)).toBeNull();
+        expect(spy).toHaveBeenCalledTimes(1);
+        const [argv, opts] = spy.mock.calls[0]! as [string[], Record<string, unknown>];
+        expect(argv).toEqual(["cmd", "/c", `start "tg_x" cmd /k ${launchCommand(true)}`]);
+        expect(opts.windowsVerbatimArguments).toBe(true);
+        expect(opts.cwd).toBe("C:\\proj\\x");
+      } finally {
+        spy.mockRestore();
+      }
+    },
+  );
 });
 
 describe("launchCommand", () => {

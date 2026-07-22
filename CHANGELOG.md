@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.12.2 — 2026-07-22
+
+- **Remote session launch actually launches (Windows).** The composed
+  `start "tg_<name>" cmd /k claude …` line was passed through Bun.spawn's
+  default Windows arg encoding, which escapes embedded quotes C-runtime-style
+  (`\"`) — cmd.exe does not understand that, so `start` resolved the *program*
+  to `\tg_<name>\`: a "Windows cannot find '\tg_…\'" popup, no session, and the
+  queued messages expiring unanswered. The line is now passed verbatim
+  (`windowsVerbatimArguments`), so the quoted window title parses as a title
+  and the session launches. Affected every autostart and "▶️ Start session"
+  relaunch on Windows.
+
 ## 0.12.1 — 2026-07-22
 
 - **Resume flag no longer swallowed by the channels flag.**
