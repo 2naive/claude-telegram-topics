@@ -89,6 +89,9 @@ type Session = {
   waiter: ((v: void) => void) | null;
   waiterTimer: ReturnType<typeof setTimeout> | null;
   lastActive: number;
+  /** Registration time — delivery confirmation applies only to sessions whose
+   * project has not turned since this moment (the fresh-spawn loss window). */
+  bornAt: number;
 };
 
 const INBOX_DIR = join(STATE_DIR, "inbox");
@@ -178,6 +181,91 @@ async function postNoSessionNotice(topicId: number, project: string): Promise<vo
           },
     })
     .catch(() => {});
+}
+
+// --- Delivery confirmation for fresh sessions -------------------------------
+//
+// A channel push into a claude that is still starting is fire-and-forget and
+// can vanish: the readiness gate narrows the window but cannot close it (the
+// MCP layer answers pings before the app is ready to surface messages). The
+// plugin's own turn hooks are the app-level truth: a turn posts /activity.
+// So when messages are handed to a session that has NEVER turned since it
+// registered and no activity follows, re-queue them; after the retries post an
+// honest notice instead of staying silent — the failure mode this closes was
+// "console opens, message never appears, nothing anywhere says why".
+const CONFIRM_TIMEOUT_MS = 45_000;
+const CONFIRM_MAX_REDELIVERIES = 2;
+const lastActivityAt = new Map<string, number>(); // project -> last /activity ts
+type PendingConfirm = {
+  sid: string;
+  msgs: Inbound[];
+  redeliveries: number;
+  timer: ReturnType<typeof setTimeout>;
+};
+const pendingConfirm = new Map<string, PendingConfirm>(); // project ->
+
+function clearPendingConfirm(project: string): void {
+  const p = pendingConfirm.get(project);
+  if (!p) return;
+  clearTimeout(p.timer);
+  pendingConfirm.delete(project);
+}
+
+function armPendingConfirm(s: Session, msgs: Inbound[]): void {
+  if (msgs.length === 0) return;
+  const project = s.project;
+  // A project that has turned since this session came up is provably able to
+  // surface messages — arming there risks double-delivery on a long tool-less
+  // stretch mid-turn. Only the never-turned-fresh case gets confirmation.
+  if ((lastActivityAt.get(project) ?? 0) >= s.bornAt) return;
+  const existing = pendingConfirm.get(project);
+  if (existing) {
+    existing.msgs.push(...msgs);
+    return;
+  }
+  pendingConfirm.set(project, {
+    sid: s.id,
+    msgs: [...msgs],
+    redeliveries: 0,
+    timer: setTimeout(() => confirmTimeout(project), CONFIRM_TIMEOUT_MS),
+  });
+}
+
+function confirmTimeout(project: string): void {
+  const p = pendingConfirm.get(project);
+  if (!p) return;
+  const s = sessions.get(p.sid);
+  if (!s) {
+    // The holder died with the messages — same recovery as the reaper: re-hold
+    // and kick the no-session flow, unless a live sibling has its own copies.
+    pendingConfirm.delete(project);
+    const tid = projectTopicId(project);
+    if (tid !== undefined && (topicSessions.get(tid)?.size ?? 0) === 0) {
+      for (const m of p.msgs) holdInbound(project, m);
+      void postNoSessionNotice(tid, project);
+    }
+    return;
+  }
+  if (p.redeliveries >= CONFIRM_MAX_REDELIVERIES) {
+    pendingConfirm.delete(project);
+    log("deliver.unconfirmed", { project, sid: p.sid, count: p.msgs.length });
+    const tid = projectTopicId(project);
+    if (tid !== undefined) {
+      void bot.api
+        .sendMessage(
+          GROUP_CHAT_ID,
+          "⚠️ The session started but has not picked the message up — it may still be initializing. If nothing happens, resend the message.",
+          { message_thread_id: tid },
+        )
+        .catch(() => {});
+    }
+    return;
+  }
+  p.redeliveries++;
+  p.timer = setTimeout(() => confirmTimeout(project), CONFIRM_TIMEOUT_MS);
+  log("deliver.retry", { project, sid: p.sid, count: p.msgs.length, attempt: p.redeliveries });
+  s.queue.push(...p.msgs);
+  wake(s);
 }
 
 function deliver(topicId: number, msg: Inbound): void {
@@ -1187,6 +1275,9 @@ async function handle(req: Request): Promise<Response> {
     log("activity", { project: project ?? "", state: state ?? "" });
     if (project) {
       markHooked(project); // this session carries the hooks
+      // App-level proof the session surfaces messages — confirm the delivery.
+      lastActivityAt.set(project, Date.now());
+      clearPendingConfirm(project);
       if (state === "failed") notifyTurnFailed(project);
       else if (state === "start") {
         // Turn boundary (UserPromptSubmit) — the session hasn't spoken yet, and
@@ -1208,7 +1299,11 @@ async function handle(req: Request): Promise<Response> {
       project?: string;
       text?: string;
     };
-    if (project) markHooked(project); // a mirror POST proves the hook is present
+    if (project) {
+      markHooked(project); // a mirror POST proves the hook is present
+      lastActivityAt.set(project, Date.now());
+      clearPendingConfirm(project); // a completed turn certainly consumed inbound
+    }
     const skipped = !project || !text || !text.trim() || spokeThisTurn.has(project);
     log("mirror", { project: project ?? "", chars: (text ?? "").length, skipped });
     if (!skipped) void mirrorToTopic(project!, text!);
@@ -1250,6 +1345,7 @@ async function handle(req: Request): Promise<Response> {
       waiter: null,
       waiterTimer: null,
       lastActive: Date.now(),
+      bornAt: Date.now(),
     };
     sessions.set(id, fresh);
     bindTopic(id, topicId);
@@ -1264,6 +1360,10 @@ async function handle(req: Request): Promise<Response> {
         unbindTopic(prev, old.topicId);
         sessions.delete(prev);
       }
+      // A pending delivery confirmation follows the re-registered session, or
+      // its timeout would see a dead sid and mis-route to the re-hold path.
+      const pc = pendingConfirm.get(project);
+      if (pc && pc.sid === prev) pc.sid = id;
       remapSentSessions(prev, id);
       // Pending permission prompts follow the re-registered session too — the
       // posted buttons carry the old sid, but the entry now names the live one
@@ -1450,6 +1550,13 @@ async function handle(req: Request): Promise<Response> {
         });
       }
       const messages = s.queue.splice(0, s.queue.length);
+      if (messages.length > 0) {
+        // Observability for the last mile: the drain from the leader queue was
+        // invisible, so "gate never opened" vs "pushed and lost client-side"
+        // could not be told apart from the logs.
+        log("poll.delivered", { sid: s.id, count: messages.length });
+        armPendingConfirm(s, messages.filter((m) => m.type === "message"));
+      }
       return json({ messages });
     }
     if (path === "/unregister") {
@@ -1719,6 +1826,9 @@ export function stopLeader(): void {
   activityTimers.clear();
   for (const t of hooklessTimers.values()) clearTimeout(t);
   hooklessTimers.clear();
+  for (const p of pendingConfirm.values()) clearTimeout(p.timer);
+  pendingConfirm.clear();
+  lastActivityAt.clear();
   if (reaperTimer) {
     clearInterval(reaperTimer);
     reaperTimer = null;

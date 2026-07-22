@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.14.0 — 2026-07-23
+
+- **Delivery is confirmed, retried, and never silent.** A channel push into a
+  claude that is still starting is fire-and-forget and can vanish — the
+  readiness gate narrows the window but cannot close it (the MCP layer answers
+  pings before the app surfaces messages). The plugin's own turn hooks are the
+  app-level truth: when messages are handed to a session that has never turned
+  since registering and no `/activity` follows within 45 s, the leader
+  re-queues them (2 retries); if still unconfirmed it posts an honest
+  "⚠️ the session has not picked the message up" notice to the topic instead
+  of staying silent. Confirmation arms only for never-turned sessions, so a
+  long tool-less stretch mid-turn in a mature session cannot double-deliver.
+  If the holding session dies meanwhile, the messages are re-held and the
+  normal no-session recovery kicks in.
+- **Last-mile observability:** the leader now logs `poll.delivered` when a
+  session pulls its queue — separating "gate never opened" from "pushed and
+  lost client-side" in `leader.log`.
+
 ## 0.13.2 — 2026-07-23
 
 - **A dead session no longer blocks recovery for hours.** A closed (or
