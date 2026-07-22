@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.12.1 — 2026-07-22
+
+- **Resume flag no longer swallowed by the channels flag.**
+  `--dangerously-load-development-channels` is variadic — it consumes every
+  following token as a channel name, flag-shaped ones included. The 0.11.0
+  relaunch appended `--continue` after it, so claude tried to load a channel
+  called `--continue` (error popup at launch) and started WITHOUT resuming.
+  `--continue` is now inserted before the variadic (appended only when the
+  custom command has no such flag).
+
 ## 0.12.0 — 2026-07-22
 
 Fixes a live outage: several concurrent sessions (plus one on another device on

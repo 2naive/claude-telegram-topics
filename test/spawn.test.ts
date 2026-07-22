@@ -72,10 +72,24 @@ describe("launchCommand", () => {
     expect(launchCommand(false)).not.toContain("--continue");
   });
 
-  test("resume start appends --continue for recovery", () => {
+  test("resume inserts --continue BEFORE the variadic channels flag", () => {
+    // --dangerously-load-development-channels is variadic: every following
+    // token is eaten as a channel name, so a trailing --continue became a
+    // bogus channel (launch error popup) and no resume. It must come first.
     const cmd = launchCommand(true);
-    expect(cmd).toContain("--dangerously-load-development-channels");
-    expect(cmd.endsWith("--continue")).toBe(true);
+    expect(cmd).toContain("--continue --dangerously-load-development-channels");
+    expect(cmd.endsWith("--continue")).toBe(false);
+  });
+
+  test("resume appends --continue when there is no variadic flag", () => {
+    const prev = process.env.TG_TOPICS_LAUNCH_CMD;
+    try {
+      process.env.TG_TOPICS_LAUNCH_CMD = "claude --permission-mode auto";
+      expect(launchCommand(true)).toBe("claude --permission-mode auto --continue");
+    } finally {
+      if (prev === undefined) delete process.env.TG_TOPICS_LAUNCH_CMD;
+      else process.env.TG_TOPICS_LAUNCH_CMD = prev;
+    }
   });
 
   test("resume does not double-select when the base already resumes", () => {

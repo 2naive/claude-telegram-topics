@@ -21,14 +21,24 @@ const SELECTS_CONVERSATION = /(^|\s)(-c|--continue|-r|--resume)(\s|$)/;
 /**
  * The launch command line. When `resume` is true (relaunching a project that
  * already ran — reboot/crash recovery, the autostart and "Start session"
- * paths), append `--continue` so the session picks up its most recent
+ * paths), add `--continue` so the session picks up its most recent
  * conversation in that directory instead of starting blank. A brand-new
  * `/start <path>` passes resume=false and starts fresh. If the operator's
  * custom TG_TOPICS_LAUNCH_CMD already selects a conversation, it's left alone.
+ *
+ * Placement matters: `--dangerously-load-development-channels` is VARIADIC and
+ * consumes every following token as a channel name — flag-shaped ones
+ * included. Appending `--continue` after it made claude treat "--continue" as
+ * a channel to load (error popup at launch) and start WITHOUT resuming, so the
+ * flag is inserted BEFORE the variadic; it is appended only when absent.
  */
+const VARIADIC_CHANNELS_FLAG = "--dangerously-load-development-channels";
+
 export function launchCommand(resume = false): string {
   const base = process.env.TG_TOPICS_LAUNCH_CMD?.trim() || DEFAULT_LAUNCH_CMD;
   if (!resume || SELECTS_CONVERSATION.test(base)) return base;
+  const i = base.indexOf(VARIADIC_CHANNELS_FLAG);
+  if (i >= 0) return base.slice(0, i) + "--continue " + base.slice(i);
   return `${base} --continue`;
 }
 
