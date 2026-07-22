@@ -25,6 +25,7 @@ import { existsSync } from "node:fs";
 import { assertConfigured, VERSION } from "./config.ts";
 import { assertSendable } from "./access.ts";
 import { stopLeader } from "./leader.ts";
+import { waitForClientReady } from "./ready.ts";
 import * as channel from "./client.ts";
 import type { Inbound } from "./leader.ts";
 
@@ -154,6 +155,14 @@ function pushInbound(m: Inbound): void {
     .catch((e) => process.stderr.write(`telegram-topics: channel push failed: ${e}\n`));
 }
 
+// Resolved when the client sends its MCP `initialized` notification — the
+// earliest moment a notification is even legal to deliver (see ready.ts).
+let clientInitialized!: () => void;
+const clientInitializedPromise = new Promise<void>((resolve) => {
+  clientInitialized = resolve;
+});
+mcp.oninitialized = () => clientInitialized();
+
 let inboundRunning = false;
 async function runInboundLoop(): Promise<void> {
   inboundRunning = true;
@@ -163,6 +172,10 @@ async function runInboundLoop(): Promise<void> {
   // session while outbound kept working (tools re-register lazily), a silent
   // half-broken bridge. Retry with backoff until it sticks or we shut down.
   let backoff = 1000;
+  // The first push is gated on client readiness. Registration is NOT gated —
+  // registering early lets the leader drain its held queue into our session
+  // queue (where messages wait safely) and stops the no-session notices.
+  let pushGateOpen = false;
   while (inboundRunning) {
     try {
       await channel.ensureRegistered();
@@ -174,6 +187,15 @@ async function runInboundLoop(): Promise<void> {
       await new Promise((r) => setTimeout(r, backoff));
       backoff = Math.min(backoff * 2, 30_000);
       continue;
+    }
+    if (!pushGateOpen) {
+      const readiness = await waitForClientReady({
+        initialized: clientInitializedPromise,
+        ping: () =>
+          mcp.request({ method: "ping" }, EmptyResultSchema, { timeout: 2000 }),
+      });
+      pushGateOpen = true;
+      process.stderr.write(`telegram-topics: inbound gate open (${readiness})\n`);
     }
     const msgs = await channel.drainMessages().catch(() => [] as Inbound[]);
     for (const m of msgs) pushInbound(m);

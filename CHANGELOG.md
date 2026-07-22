@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.13.1 — 2026-07-23
+
+- **Recovered messages reach the relaunched session.** The inbound loop pushed
+  drained messages the moment it registered — ~2 s after spawn on a warm start
+  — while claude was still booting; a channel notification is fire-and-forget
+  (and per the MCP spec droppable before the client's `initialized`), so the
+  message the relaunch was FOR silently vanished (the flow only ever worked on
+  cold ~29 s starts). The first push is now gated on client readiness: the MCP
+  handshake (`oninitialized`), then a ping round-trip proving the client's
+  event loop serves — each capped so an unresponsive client can't black-hole
+  inbound forever. Messages wait in the leader-side session queue meanwhile;
+  registration itself is not delayed.
+
 ## 0.13.0 — 2026-07-22
 
 - **Launched sessions no longer hang at the dev-channels warning.** The default
