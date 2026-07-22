@@ -13,8 +13,13 @@ import { realpathSync } from "node:fs";
 import { log } from "./log.ts";
 import { normalizePath } from "./paths.ts";
 
+// --channels is the APPROVED way to load an installed plugin channel: no
+// interactive gate. --dangerously-load-development-channels shows a blocking
+// "I am using this for local development" confirmation on every start, which
+// hung hands-off relaunches (live incident) — it remains supported in a custom
+// TG_TOPICS_LAUNCH_CMD, but is no longer the default.
 export const DEFAULT_LAUNCH_CMD =
-  "claude --permission-mode auto --dangerously-load-development-channels plugin:telegram-topics@claude-telegram-topics";
+  "claude --permission-mode auto --channels plugin:telegram-topics@claude-telegram-topics";
 
 // Already selects a conversation? Then don't append our own --continue.
 const SELECTS_CONVERSATION = /(^|\s)(-c|--continue|-r|--resume)(\s|$)/;
@@ -27,19 +32,23 @@ const SELECTS_CONVERSATION = /(^|\s)(-c|--continue|-r|--resume)(\s|$)/;
  * `/start <path>` passes resume=false and starts fresh. If the operator's
  * custom TG_TOPICS_LAUNCH_CMD already selects a conversation, it's left alone.
  *
- * Placement matters: `--dangerously-load-development-channels` is VARIADIC and
- * consumes every following token as a channel name — flag-shaped ones
- * included. Appending `--continue` after it made claude treat "--continue" as
- * a channel to load (error popup at launch) and start WITHOUT resuming, so the
- * flag is inserted BEFORE the variadic; it is appended only when absent.
+ * Placement matters: both channels flags are VARIADIC and consume every
+ * following token as a channel name — flag-shaped ones included. Appending
+ * `--continue` after one made claude treat "--continue" as a channel to load
+ * (error popup at launch) and start WITHOUT resuming, so the flag is inserted
+ * BEFORE the first variadic; it is appended only when neither is present.
  */
-const VARIADIC_CHANNELS_FLAG = "--dangerously-load-development-channels";
+const VARIADIC_CHANNELS_RE =
+  /(^|\s)(--channels|--dangerously-load-development-channels)(\s|$)/;
 
 export function launchCommand(resume = false): string {
   const base = process.env.TG_TOPICS_LAUNCH_CMD?.trim() || DEFAULT_LAUNCH_CMD;
   if (!resume || SELECTS_CONVERSATION.test(base)) return base;
-  const i = base.indexOf(VARIADIC_CHANNELS_FLAG);
-  if (i >= 0) return base.slice(0, i) + "--continue " + base.slice(i);
+  const m = VARIADIC_CHANNELS_RE.exec(base);
+  if (m) {
+    const at = m.index + m[1]!.length;
+    return base.slice(0, at) + "--continue " + base.slice(at);
+  }
   return `${base} --continue`;
 }
 

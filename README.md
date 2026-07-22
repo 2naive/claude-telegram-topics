@@ -101,7 +101,7 @@ All optional, set in the `.env` (or the environment):
 | `TG_TOPICS_PORT` | Loopback control port (default `8787` — also wrangler dev's default; change it if anything else uses 8787). Must be the same for **all** sessions. |
 | `TG_TOPICS_STATE_DIR` | Relocate the whole state dir (default `~/.claude/channels/telegram-topics`). **Environment-only** — it locates the `.env`, so it cannot be set *inside* it; and remote-launched sessions won't inherit it unless it is exported in the machine's environment. |
 | `TG_TOPICS_SESSION_NAME` | Override the topic title for sessions started in this environment. |
-| `TG_TOPICS_LAUNCH_CMD` | Command used by remote session launch (`/start`, autostart). Default: `claude --permission-mode auto --dangerously-load-development-channels plugin:telegram-topics@claude-telegram-topics`. On a **relaunch** of a known project (autostart / Start-session button) `--continue` is inserted (before the variadic channels flag) so the conversation resumes; a new `/start <path>` starts fresh. If your custom command already selects a conversation (`-c`/`--continue`/`-r`/`--resume`), it's left as-is. The line is passed to `cmd` **verbatim** (Windows): quoted arguments work, and cmd metacharacters (`&`, `|`, `^`) are interpreted by the outer `cmd /c` layer. |
+| `TG_TOPICS_LAUNCH_CMD` | Command used by remote session launch (`/start`, autostart). Default: `claude --permission-mode auto --channels plugin:telegram-topics@claude-telegram-topics`. On a **relaunch** of a known project (autostart / Start-session button) `--continue` is inserted (before the variadic channels flag) so the conversation resumes; a new `/start <path>` starts fresh. If your custom command already selects a conversation (`-c`/`--continue`/`-r`/`--resume`), it's left as-is. The line is passed to `cmd` **verbatim** (Windows): quoted arguments work, and cmd metacharacters (`&`, `|`, `^`) are interpreted by the outer `cmd /c` layer. |
 | `TG_TOPICS_AUTOSTART` | `1` = when a message arrives for a project with no live session, launch one automatically (Windows only) instead of offering a button. |
 | `TG_TOPICS_LAUNCH_ROOTS` | Semicolon-separated trusted directories under which `/start <path>` may launch a **brand-new** project (one not yet in `topics.json`). **Default-deny**: unset = launch-by-path disabled. Launching an arbitrary path named in a chat message is remote code-exec, so keep this confined to roots you trust (e.g. `C:\Users\you\code`). |
 | `TG_TOPICS_STATUS_ICONS` | Topic-name status badge — the only per-topic signal visible in the topic **list**: ⏳ working · 🟢 ready · 🔔 needs you (permission prompt) · 📥 queued (no session) · 💤 no session. Working/idle comes from the plugin's activity hooks (`hooks/hooks.json`, auto-active). On by default; set `0` to keep topic names unbadged. |
@@ -141,17 +141,22 @@ Everything lives in `~/.claude/channels/telegram-topics/`:
 
 ## Enable the channel
 
-During the channels research preview, custom channels **cannot** be loaded via
-`--channels` (it only accepts Anthropic's allowlisted plugins). Launch with:
+Once the plugin is installed, load its channel with the standard flag:
 
 ```
-claude --dangerously-load-development-channels plugin:telegram-topics@claude-telegram-topics
+claude --channels plugin:telegram-topics@claude-telegram-topics
 ```
 
-The flag takes the channel list **as its own argument** — it *replaces*
-`--channels`, and it consumes everything after it as channel names. **Put every
-other option (e.g. `--permission-mode acceptEdits`) BEFORE it**, or that option
-is silently swallowed. (The flag may not appear in `claude --help`; it exists.)
+(Older Claude Code builds only accepted Anthropic-allowlisted plugins there and
+needed `--dangerously-load-development-channels` instead — which shows a
+blocking "local development" confirmation on every start. If your build rejects
+`--channels` for this plugin, fall back to the dev flag; both are variadic, see
+below.)
+
+The channels flag takes the channel list **as its own argument** and consumes
+everything after it as channel names. **Put every other option (e.g.
+`--permission-mode acceptEdits`) BEFORE it**, or that option is silently
+swallowed. (These flags may not appear in `claude --help`; they exist.)
 
 **The bridge itself runs in every session once the plugin is enabled** — flags
 or not: it elects a leader, holds the bot's single `getUpdates` slot, creates
@@ -171,19 +176,19 @@ flag last.
 **Bash / Zsh** — add to `~/.bashrc` (or `~/.zshrc`), then `source` it:
 
 ```
-alias claudet='claude --permission-mode acceptEdits --dangerously-load-development-channels plugin:telegram-topics@claude-telegram-topics'
+alias claudet='claude --permission-mode acceptEdits --channels plugin:telegram-topics@claude-telegram-topics'
 ```
 
 **Windows** — drop a `claudet.cmd` anywhere on your `PATH`:
 
 ```
-@claude --permission-mode acceptEdits --dangerously-load-development-channels plugin:telegram-topics@claude-telegram-topics %*
+@claude --permission-mode acceptEdits --channels plugin:telegram-topics@claude-telegram-topics %*
 ```
 
 Or, for PowerShell, add a function to `$PROFILE`:
 
 ```
-function claudet { claude --permission-mode acceptEdits --dangerously-load-development-channels plugin:telegram-topics@claude-telegram-topics @args }
+function claudet { claude --permission-mode acceptEdits --channels plugin:telegram-topics@claude-telegram-topics @args }
 ```
 
 `%*` / `@args` still let you append per-run options — but remember they land

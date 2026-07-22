@@ -147,9 +147,13 @@ describe("windows arg passing (the \"Windows cannot find '\\tg_…\\'\" popup)",
 });
 
 describe("launchCommand", () => {
-  test("defaults to the channel launch command", () => {
+  test("defaults to the APPROVED --channels form (no interactive gate)", () => {
     // preload deletes TG_TOPICS_LAUNCH_CMD, so this is the default path.
-    expect(launchCommand()).toContain("--dangerously-load-development-channels");
+    // --dangerously-load-development-channels shows a blocking "local
+    // development" confirmation on every start, which hung hands-off
+    // relaunches — the default must use --channels.
+    expect(launchCommand()).toContain(" --channels plugin:telegram-topics@");
+    expect(launchCommand()).not.toContain("--dangerously-load-development-channels");
   });
 
   test("fresh start (resume=false) does not add --continue", () => {
@@ -158,12 +162,26 @@ describe("launchCommand", () => {
   });
 
   test("resume inserts --continue BEFORE the variadic channels flag", () => {
-    // --dangerously-load-development-channels is variadic: every following
-    // token is eaten as a channel name, so a trailing --continue became a
-    // bogus channel (launch error popup) and no resume. It must come first.
+    // The channels flags are variadic: every following token is eaten as a
+    // channel name, so a trailing --continue became a bogus channel (launch
+    // error popup) and no resume. It must come first.
     const cmd = launchCommand(true);
-    expect(cmd).toContain("--continue --dangerously-load-development-channels");
+    expect(cmd).toContain("--continue --channels");
     expect(cmd.endsWith("--continue")).toBe(false);
+  });
+
+  test("resume insertion also handles a custom dev-channels command", () => {
+    const prev = process.env.TG_TOPICS_LAUNCH_CMD;
+    try {
+      process.env.TG_TOPICS_LAUNCH_CMD =
+        "claude --permission-mode auto --dangerously-load-development-channels plugin:x@y";
+      expect(launchCommand(true)).toBe(
+        "claude --permission-mode auto --continue --dangerously-load-development-channels plugin:x@y",
+      );
+    } finally {
+      if (prev === undefined) delete process.env.TG_TOPICS_LAUNCH_CMD;
+      else process.env.TG_TOPICS_LAUNCH_CMD = prev;
+    }
   });
 
   test("resume appends --continue when there is no variadic flag", () => {

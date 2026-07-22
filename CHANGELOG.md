@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.13.0 — 2026-07-22
+
+- **Launched sessions no longer hang at the dev-channels warning.** The default
+  launch command used `--dangerously-load-development-channels`, which shows a
+  blocking "I am using this for local development" confirmation on every start
+  — the last interactive gate defeating hands-off relaunch. Current Claude Code
+  accepts installed plugin channels via the approved `--channels` flag (no
+  gate; verified headless), so the default is now
+  `claude --permission-mode auto --channels plugin:telegram-topics@claude-telegram-topics`.
+  The resume `--continue` insertion recognizes both channels flags (both are
+  variadic). A custom `TG_TOPICS_LAUNCH_CMD` with the dev flag keeps working —
+  but on old Claude Code builds whose `--channels` rejects non-allowlisted
+  plugins, set such a custom command (and expect its gate). README aliases
+  updated to `--channels` too.
+
 ## 0.12.3 — 2026-07-22
 
 - **Launched sessions no longer hang at the folder-trust prompt.** The spawn
