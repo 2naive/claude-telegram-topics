@@ -64,6 +64,16 @@ plugin is single-session and has no per-project threads. This fork fixes both:
 /reload-plugins
 ```
 
+Then three setup steps, each one command:
+
+1. **Configure** — `/telegram-topics:configure <bot-token>` and
+   `/telegram-topics:configure group <-100…id>` (details below).
+2. **Allowlist** — `/telegram-topics:allowlist` (one admin prompt): approves
+   the channel for `--channels`. Skippable only if you'll launch with the
+   development flag — see [Enable the channel](#enable-the-channel).
+3. **Launch** — `claude --permission-mode auto --channels
+   plugin:telegram-topics@claude-telegram-topics`.
+
 Until you configure a token, the server exits immediately with
 `missing TELEGRAM_BOT_TOKEN, TELEGRAM_GROUP_CHAT_ID` and the plugin shows as
 failed — **that is expected**; go straight to Configure. (`/reload-plugins` is
@@ -150,11 +160,20 @@ claude --channels plugin:telegram-topics@claude-telegram-topics
 **⚠️ Allowlist first.** `--channels` wires a channel ONLY for plugins on the
 approved-channels allowlist; anything else is **silently** loaded as a plain
 MCP plugin — outbound tools work, but inbound messages never reach the session
-(an easy-to-miss half-broken state). Since this fork is not on Anthropic's
-default allowlist, add it via **managed settings**
-(`C:\Program Files\ClaudeCode\managed-settings.json` on Windows — admin
-required; or the `HKLM\SOFTWARE\Policies\ClaudeCode` registry key;
-`/Library/Application Support/ClaudeCode/managed-settings.json` on macOS):
+(an easy-to-miss half-broken state; `/telegram-topics:configure` preflight
+detects it, and the leader names it in the topic when a delivery goes
+unconfirmed). Since this fork is not on Anthropic's default allowlist, approve
+it with one command:
+
+```
+/telegram-topics:allowlist
+```
+
+It writes machine-level **managed settings**
+(`C:\Program Files\ClaudeCode\managed-settings.json` on Windows — one UAC
+prompt; `/Library/Application Support/ClaudeCode/managed-settings.json` on
+macOS; `/etc/claude-code/managed-settings.json` on Linux — via the printed
+`sudo` command), merge-safe with whatever is already there:
 
 ```json
 {
@@ -166,13 +185,30 @@ required; or the `HKLM\SOFTWARE\Policies\ClaudeCode` registry key;
 }
 ```
 
-The list **replaces** the default Anthropic allowlist — keep the official
-plugin's entry if you also use it. Sessions read the allowlist at startup, so
-restart them after creating the file. The alternative is
-`--dangerously-load-development-channels`, which bypasses the allowlist but
-shows a blocking "local development" confirmation on **every** start (so it
-cannot be used for hands-off remote relaunch). Both flags are variadic, see
-below.
+The list **replaces** the default Anthropic allowlist — that is why the
+official plugin's entry is carried along (keep entries for any other channel
+plugins you use). Sessions read the allowlist at startup, so restart them
+after the write.
+
+### No-admin alternative: the development flag
+
+Without machine admin rights, launch with the development-channels flag
+instead — it bypasses the allowlist entirely:
+
+```
+claude --permission-mode auto --dangerously-load-development-channels plugin:telegram-topics@claude-telegram-topics
+```
+
+Trade-off: an interactive "local development" confirmation gates **every**
+start — fine for sessions you start by hand, **unusable for hands-off remote
+relaunch/autostart** (the spawned console hangs at the prompt). Both channels
+flags are variadic, see below.
+
+| Symptom | Cause → fix |
+| --- | --- |
+| Send tools work, badge updates, but messages from Telegram never arrive | Not allowlisted under `--channels` → `/telegram-topics:allowlist`, restart the session |
+| Spawned console hangs at "WARNING: Loading development channels" | Dev flag in `TG_TOPICS_LAUNCH_CMD` → switch the launch command to `--channels` + allowlist |
+| "not on the approved channels list" warning at startup | Allowlist file missing/incomplete at the managed-settings path → `/telegram-topics:allowlist` |
 
 The channels flag takes the channel list **as its own argument** and consumes
 everything after it as channel names. **Put every other option (e.g.

@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.15.0 — 2026-07-23
+
+Onboarding for the channels allowlist — closing the worst first-run failure
+(`--channels` silently loading the plugin without the inbound half: tools
+work, messages never arrive, nothing says why).
+
+- **`/telegram-topics:allowlist`** — one-command approval: writes the
+  machine-level managed settings (Windows: one UAC prompt; macOS/Linux: prints
+  the exact `sudo` command on permission denied). Merge-safe — existing
+  managed-settings keys and allowlist entries are preserved — and carries the
+  official Telegram plugin's entry, since a custom `allowedChannelPlugins`
+  REPLACES the default Anthropic allowlist. Idempotent.
+- **Preflight checks the allowlist** — `/telegram-topics:configure` now
+  reports NOT ALLOWLISTED with both fixes (the skill, or the development flag)
+  before the user ever hits the silent failure.
+- **The unconfirmed-delivery notice names the cause** — when redelivery gives
+  up AND the plugin is not allowlisted, the topic notice says exactly that
+  (with the fix) instead of a generic "resend the message".
+- **README**: allowlist is now install step 2; a dedicated **no-admin
+  alternative** section documents launching via
+  `--dangerously-load-development-channels` (bypasses the allowlist; an
+  interactive confirmation gates every start — unusable for hands-off
+  relaunch); plus a symptom table for the three ways this bites.
+
 ## 0.14.0 — 2026-07-23
 
 - **Delivery is confirmed, retried, and never silent.** A channel push into a

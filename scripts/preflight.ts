@@ -10,6 +10,7 @@
 // The token is read from config and never printed.
 
 import { BOT_TOKEN, GROUP_CHAT_ID, ENV_FILE } from "../src/config.ts";
+import { channelAllowlistState } from "../src/allowlist.ts";
 
 type TgResponse = {
   ok: boolean;
@@ -90,6 +91,17 @@ verdict(
   upd?.error_code !== 409,
   "getUpdates slot free (or this machine's leader holds it — fine)",
   "409 CONFLICT: the token is being polled elsewhere. If a telegram-topics session is running right now, that is expected (its leader polls); otherwise another integration (e.g. the official Telegram plugin, still enabled) owns this token — disable it or use a dedicated bot.",
+  false,
+);
+
+// 5) Approved for --channels? Not being allowlisted is the worst first-run
+// failure: the plugin loads as plain MCP, tools work, and inbound silently
+// never arrives. Soft: launching with the development flag needs no allowlist.
+const allow = channelAllowlistState();
+verdict(
+  allow.ok,
+  `channel allowlisted for --channels (${allow.detail})`,
+  `NOT ALLOWLISTED for --channels (${allow.detail}) — with --channels, inbound messages will silently never arrive. Fix: run /telegram-topics:allowlist (writes managed settings; one admin prompt), or launch with --dangerously-load-development-channels instead (no admin, but an interactive confirmation gates every start — unusable for hands-off relaunch).`,
   false,
 );
 

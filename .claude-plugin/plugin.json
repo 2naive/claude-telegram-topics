@@ -1,7 +1,7 @@
 {
   "name": "telegram-topics",
   "description": "Telegram channel for Claude Code — 1 project = 1 forum topic, with a live working/idle status badge on each topic. Run multiple projects concurrently, get notifications, and drive or approve sessions remotely from your phone. Configure with /telegram-topics:configure.",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "author": { "name": "2naive", "url": "https://github.com/2naive" },
   "keywords": [
     "telegram",

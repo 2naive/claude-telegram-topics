@@ -36,6 +36,7 @@ import {
   topicName,
 } from "./topics.ts";
 import { normalizePath } from "./paths.ts";
+import { channelAllowlistState } from "./allowlist.ts";
 import {
   isNewerVersion,
   parseCallback,
@@ -251,12 +252,15 @@ function confirmTimeout(project: string): void {
     log("deliver.unconfirmed", { project, sid: p.sid, count: p.msgs.length });
     const tid = projectTopicId(project);
     if (tid !== undefined) {
+      // Name the deterministic cause when there is one: a session launched
+      // with --channels while the plugin is not allowlisted can NEVER surface
+      // inbound — "resend the message" would be false hope.
+      const allow = channelAllowlistState();
+      const note = allow.ok
+        ? "⚠️ The session started but has not picked the message up — it may still be initializing. If nothing happens, resend the message."
+        : "⚠️ The session cannot receive messages: the plugin is not on the channels allowlist, so --channels loads it without the inbound half. On the machine run /telegram-topics:allowlist (one admin prompt), or launch with --dangerously-load-development-channels, then restart the session.";
       void bot.api
-        .sendMessage(
-          GROUP_CHAT_ID,
-          "⚠️ The session started but has not picked the message up — it may still be initializing. If nothing happens, resend the message.",
-          { message_thread_id: tid },
-        )
+        .sendMessage(GROUP_CHAT_ID, note, { message_thread_id: tid })
         .catch(() => {});
     }
     return;

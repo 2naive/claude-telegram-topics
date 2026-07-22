@@ -60,23 +60,33 @@ is the installed plugin directory, e.g.
 `~/.claude/plugins/cache/claude-telegram-topics/telegram-topics/<version>`.)
 
 It prints one `OK`/`FAIL` line per check — token validity, group reachable,
-group is a forum, bot can Manage Topics, and whether another poller already
-holds the token's `getUpdates` slot (the classic shared-token 409). Report each
-verdict plainly; on 409 note that an already-running telegram-topics leader on
-this machine is a false alarm, but the official Telegram plugin being *enabled*
-is the usual real cause.
+group is a forum, bot can Manage Topics, whether another poller already holds
+the token's `getUpdates` slot (the classic shared-token 409), and whether the
+plugin is on the **channels allowlist** for `--channels`. Report each verdict
+plainly; on 409 note that an already-running telegram-topics leader on this
+machine is a false alarm, but the official Telegram plugin being *enabled* is
+the usual real cause. On NOT ALLOWLISTED, offer `/telegram-topics:allowlist`
+(one command, one admin prompt) — without it, `--channels` loads the plugin as
+plain MCP and inbound messages silently never arrive.
 
 If all checks pass, tell the user the channel is ready and to relaunch with:
+
+```
+claude --permission-mode auto --channels plugin:telegram-topics@claude-telegram-topics
+```
+
+No-admin alternative (bypasses the allowlist, but an interactive "local
+development" confirmation gates every start — unusable for hands-off
+relaunch):
 
 ```
 claude --permission-mode auto --dangerously-load-development-channels plugin:telegram-topics@claude-telegram-topics
 ```
 
-During the channels research preview this flag **replaces** `--channels`
-(custom channels are not allowlisted for it), and it consumes everything after
-it as channel names — any other option (`--permission-mode`, …) must come
-BEFORE it. `--permission-mode auto` enables the Telegram permission-approval
-relay (safe calls pass silently, risky ones relay to the topic); drop it for the
+Both channels flags are variadic — they consume everything after them as
+channel names, so any other option (`--permission-mode`, …) must come BEFORE
+them. `--permission-mode auto` enables the Telegram permission-approval relay
+(safe calls pass silently, risky ones relay to the topic); drop it for the
 default manual mode.
 
 The token never needs to reach this chat: a privacy-conscious user can set
