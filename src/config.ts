@@ -7,6 +7,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { normalizePath } from "./paths.ts";
 import pkg from "../package.json";
 
 // Single source of truth for the running code's version (package.json). Drives
@@ -25,8 +26,33 @@ export const CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".cla
 export const ENV_FILE = join(STATE_DIR, ".env");
 export const TOPICS_FILE = join(STATE_DIR, "topics.json");
 export const SENT_FILE = join(STATE_DIR, "sent.json");
+// Cross-process poller back-off. A 409/401 from getUpdates means another
+// consumer holds the token (or a force-killed sibling's getUpdates is still
+// open server-side). Persisting the cooldown here makes EVERY local session
+// back off together instead of one after another grabbing the freed port and
+// colliding again — the leaderless 409 thrash that killed inbound (see
+// tryBecomeLeader).
+export const POLLER_COOLDOWN_FILE = join(STATE_DIR, "poller.cooldown");
 
 mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
+
+// A project key is the normalized full path that maps 1:1 to a topic. The
+// plugin's own config tree is NEVER a project: Claude Code spawns plugin MCP
+// servers with cwd = CONFIG_DIR, so a session whose identity hasn't resolved
+// yet falls back to process.cwd() = ~/.claude (or the plugin cache dir beneath
+// it). Registering that key minted garbage topics ("~/.claude", ".claude", the
+// cache dir). Reject it: there is no real project at the config root or the
+// bare home dir, so refusing loses nothing and stops the junk topic at the one
+// chokepoint that creates them.
+const CONFIG_DIR_KEY = normalizePath(CONFIG_DIR);
+const HOME_KEY = normalizePath(homedir());
+export function isRealProjectKey(key: string): boolean {
+  const k = normalizePath(key);
+  if (!k) return false;
+  if (k === CONFIG_DIR_KEY || k.startsWith(CONFIG_DIR_KEY + "/")) return false;
+  if (k === HOME_KEY) return false;
+  return true;
+}
 
 /** Parse .env text: KEY=VALUE lines, # comments, CRLF tolerated. Pure. */
 export function parseEnvFile(text: string): Record<string, string> {

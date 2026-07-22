@@ -1,5 +1,5 @@
 import { test, expect, describe } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -11,14 +11,20 @@ import { join } from "node:path";
 process.env.TG_TOPICS_STATE_DIR ||= mkdtempSync(join(tmpdir(), "tgtopics-"));
 process.env.TELEGRAM_GROUP_CHAT_ID ||= "-100999";
 
-const { TOPICS_FILE } = await import("../src/config.ts");
+const { TOPICS_FILE, CONFIG_DIR } = await import("../src/config.ts");
 
-// Seed a legacy topics.json with an un-normalized key to exercise migration —
+// Seed a legacy topics.json with an un-normalized key to exercise migration,
+// plus a junk entry keyed on the config tree to exercise the load-time drop —
 // before topics.ts is imported, which is when the file is read.
 writeFileSync(
   TOPICS_FILE,
   JSON.stringify({
     "C:\\Users\\Me\\Legacy": { topicId: 42, name: "Legacy", createdAt: 1 },
+    [join(CONFIG_DIR, "plugins", "cache", "old")]: {
+      topicId: 999,
+      name: "old",
+      createdAt: 1,
+    },
   }),
 );
 
@@ -86,5 +92,40 @@ describe("recreateTopic", () => {
     const first = await topics.resolveTopic(api, key, "project-c");
     const fresh = await topics.recreateTopic(api, key);
     expect(fresh).not.toBe(first);
+  });
+});
+
+describe("load-time junk drop (fix B)", () => {
+  test("a config-tree entry seeded into topics.json is dropped from the map", () => {
+    expect(topics.projectForTopic(999)).toBeUndefined();
+    expect(topics.knownProjects().some((k) => k.includes("/plugins/cache/"))).toBe(false);
+  });
+});
+
+describe("identity guard (fix B): never create a topic for the config tree", () => {
+  test("refuses the config dir and its subtree, without calling the API", async () => {
+    const { api, calls } = fakeApi();
+    const cfgKey = normalizePath(CONFIG_DIR);
+    const cacheKey = normalizePath(join(CONFIG_DIR, "plugins", "cache", "x", "0.1.0"));
+    await expect(topics.resolveTopic(api, cfgKey, ".claude")).rejects.toThrow(/non-project/);
+    await expect(topics.resolveTopic(api, cacheKey, ".claude")).rejects.toThrow(/non-project/);
+    await expect(topics.recreateTopic(api, cacheKey)).rejects.toThrow(/non-project/);
+    expect(calls.length).toBe(0);
+  });
+});
+
+describe("cross-process idempotency (fix C)", () => {
+  test("reuses a topic a sibling persisted since our map was loaded", async () => {
+    const { api, calls } = fakeApi();
+    const key = normalizePath("/tmp/project-disk");
+    // Simulate another leader that created + persisted this topic after our
+    // in-memory map was loaded, by writing straight to topics.json.
+    const cur = JSON.parse(readFileSync(TOPICS_FILE, "utf8"));
+    cur[key] = { topicId: 7777, name: "project-disk", createdAt: 1 };
+    writeFileSync(TOPICS_FILE, JSON.stringify(cur));
+    // map[key] is absent, so resolve falls into createOnce — which must re-read
+    // the disk map and reuse 7777 instead of minting a duplicate.
+    expect(await topics.resolveTopic(api, key, "project-disk")).toBe(7777);
+    expect(calls.length).toBe(0);
   });
 });

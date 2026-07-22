@@ -1,6 +1,6 @@
 {
   "name": "claude-telegram-topics",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "Telegram channel for Claude Code with 1 project = 1 forum topic. Concurrent multi-project support via a leader/follower bridge. Clean fork of the official Anthropic Telegram plugin.",
   "license": "Apache-2.0",
   "author": { "name": "2naive", "url": "https://github.com/2naive" },

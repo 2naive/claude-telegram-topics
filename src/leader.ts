@@ -11,6 +11,7 @@ import { join } from "node:path";
 import {
   mkdirSync,
   writeFileSync,
+  readFileSync,
   readdirSync,
   statSync,
   unlinkSync,
@@ -22,6 +23,7 @@ import {
   CONTROL_PORT,
   STATE_DIR,
   CONFIG_DIR,
+  POLLER_COOLDOWN_FILE,
   VERSION,
 } from "./config.ts";
 import { isAllowedUser, assertSendable } from "./access.ts";
@@ -1499,12 +1501,38 @@ function scheduleStepDown(newerVersion: string): void {
 // After the poller dies (409: another consumer on the token; 401: token
 // revoked) an immediate re-election in the same process just re-runs the same
 // failure — an endless elect→die cycle burning CPU, disk flushes and API
-// quota. The cooldown spaces the attempts; a DIFFERENT healthy process is
-// unaffected and can still take the port at once.
+// quota. The cooldown spaces the attempts.
 let electionCooldownUntil = 0;
 
 function pollerDeathCooldownMs(error: string): number {
   return /\b(409|401)\b/.test(error) ? 60_000 : 10_000;
+}
+
+// A per-process cooldown is NOT enough for 409/401: those mean the TOKEN has a
+// competing consumer (another device, or a force-killed sibling whose
+// getUpdates is still open server-side for ~50s). When one leader backs off and
+// frees the port, a DIFFERENT local session — with no cooldown of its own —
+// grabs it and collides again. With several sessions that became a leaderless
+// 409 thrash (a new leader every ~20s for 15 min) that never let inbound
+// recover. Persisting the cooldown makes every local session honor the same
+// quiet window, so the competing/ghost poll times out and the next single
+// retry succeeds instead of cascading. Benign network blips (10s) stay
+// per-process; only token-level conflicts go cross-process.
+function readSharedPollerCooldown(): number {
+  try {
+    const n = Number(readFileSync(POLLER_COOLDOWN_FILE, "utf8").trim());
+    return Number.isFinite(n) ? n : 0;
+  } catch {
+    return 0; // absent / unreadable — no active cooldown
+  }
+}
+
+function writeSharedPollerCooldown(until: number): void {
+  try {
+    writeFileSync(POLLER_COOLDOWN_FILE, String(until), { mode: 0o600 });
+  } catch {
+    // best-effort: the per-process cooldown still spaces THIS process's retries
+  }
 }
 
 /**
@@ -1514,6 +1542,10 @@ function pollerDeathCooldownMs(error: string): number {
  */
 export async function tryBecomeLeader(): Promise<boolean> {
   if (Date.now() < electionCooldownUntil) return false;
+  // Cross-process back-off: another local session just hit a token-level 409/401
+  // and armed the shared cooldown. Don't grab the freed port and re-collide —
+  // wait out the quiet window with everyone else.
+  if (Date.now() < readSharedPollerCooldown()) return false;
   try {
     bunServer = Bun.serve({
       hostname: "127.0.0.1",
@@ -1555,8 +1587,13 @@ export async function tryBecomeLeader(): Promise<boolean> {
       // next control request re-elects a fresh leader (this process or another).
       botRunning = false;
       const cooldownMs = pollerDeathCooldownMs(String(e));
-      electionCooldownUntil = Date.now() + cooldownMs;
-      log("poller.died", { error: String(e), cooldownMs });
+      const until = Date.now() + cooldownMs;
+      electionCooldownUntil = until;
+      // Token-level conflict (409/401) — make ALL local sessions back off, not
+      // just this process, or the next one re-collides and the thrash continues.
+      const tokenConflict = /\b(409|401)\b/.test(String(e));
+      if (tokenConflict) writeSharedPollerCooldown(until);
+      log("poller.died", { error: String(e), cooldownMs, shared: tokenConflict });
       process.stderr.write(
         `telegram-topics leader: poller died, relinquishing leadership (re-election cooldown ${cooldownMs}ms): ${e}\n`,
       );

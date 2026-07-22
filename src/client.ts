@@ -6,7 +6,7 @@
 // request transparently re-elects and re-registers (the topic is persisted on
 // disk, so the same project lands back in the same topic).
 
-import { CONTROL_PORT, VERSION } from "./config.ts";
+import { CONTROL_PORT, VERSION, isRealProjectKey } from "./config.ts";
 import {
   identityResolved,
   projectKey,
@@ -105,6 +105,16 @@ async function register(honorHandoff = true): Promise<void> {
   // awaits below, and registeredKey must reflect what the leader was actually
   // told, or the heal comparison would silently pass on a mismatch.
   const key = projectKey();
+  // Never register the config-dir fallback of an unresolved identity — that key
+  // (~/.claude or the plugin cache dir beneath it) is not a real project and
+  // would mint a garbage topic. Defer: the inbound loop retries, and identity
+  // keeps recomputing until a session record answers. (The leader refuses this
+  // key too — this just avoids the wasted round-trip and retry noise.)
+  if (!isRealProjectKey(key)) {
+    throw new Error(
+      "telegram-topics: project identity not resolved yet — deferring registration",
+    );
+  }
   const resp = await fetch(`${BASE}/register`, {
     method: "POST",
     headers: { "content-type": "application/json" },

@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.12.0 — 2026-07-22
+
+Fixes a live outage: several concurrent sessions (plus one on another device on
+the same bot token) fell into a `getUpdates` **409 thrash** — leadership hopped
+between sessions every ~20 s for 15 min and inbound Telegram messages stopped
+arriving. The churn also minted duplicate and junk topics.
+
+- **409/401 back-off is now cross-process.** A token-level conflict means another
+  consumer holds the token (another device, or a force-killed sibling whose
+  getUpdates is still open server-side for ~50 s). The 60 s cooldown was
+  per-process, so when one leader freed the port another session grabbed it and
+  re-collided — a leaderless thrash that never recovered. The cooldown is now
+  persisted (`poller.cooldown`) and honored by **every** local session, so the
+  token gets a quiet window and the next single retry succeeds instead of
+  cascading. Benign network blips stay per-process.
+- **No more junk topics from unresolved identity.** Claude Code spawns plugin MCP
+  servers with cwd = `~/.claude`, so a session whose identity hasn't resolved
+  yet used to register that fallback path and mint a garbage topic (`~/.claude`,
+  `.claude`, the plugin cache dir). Such keys are now refused at creation, not
+  registered by the client, and dropped from `topics.json` on load — the map
+  self-heals. (The forum topics themselves are cleaned separately.)
+- **Duplicate topics under churn are deduped.** Topic creation re-reads the
+  on-disk map right before creating and reuses an entry a sibling persisted since
+  load; recreation adopts a sibling's fresh topic instead of minting another.
+  Combined with the thrash fix, the same project no longer spawns 5–6 topics.
+
 ## 0.11.0 — 2026-07-15
 
 - **Relaunches resume the conversation.** When a project session is brought back
