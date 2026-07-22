@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.13.2 — 2026-07-23
+
+- **A dead session no longer blocks recovery for hours.** A closed (or
+  crashed) console left its registry entry behind for up to 3 h — the leader
+  kept "delivering" inbound to the corpse's queue, so no autostart, no notice,
+  nothing (live incident). Three layers now close this: the server sends a
+  best-effort `/unregister` on graceful shutdown (topic freed instantly); the
+  idle reaper treats 2 minutes without a poll as dead (was 3 h; a live
+  session's background loop polls every ≤25 s, and a wedged one that wakes
+  simply re-registers); and a reaped session's undelivered queue is re-held
+  and the normal no-session recovery (notice / autostart) is kicked — instead
+  of the messages silently vanishing — unless a live sibling session already
+  got its fan-out copy.
+
+**Heads-up (docs):** `--channels` wires a channel ONLY for plugins on the
+approved-channels allowlist; anything else is silently loaded as a plain MCP
+plugin — tools work, inbound never arrives. For this fork, allowlist it via
+managed settings (`C:\ProgramData\ClaudeCode\managed-settings.json` on
+Windows): `"channelsEnabled": true` and `"allowedChannelPlugins":
+[{"plugin": "telegram-topics", "marketplace": "claude-telegram-topics"}]` —
+note the list REPLACES the default Anthropic allowlist, so include
+`{"plugin": "telegram", "marketplace": "claude-plugins-official"}` too if you
+also use the official plugin. The `--dangerously-load-development-channels`
+flag bypasses the allowlist but shows a blocking confirmation on every start.
+
 ## 0.13.1 — 2026-07-23
 
 - **Recovered messages reach the relaunched session.** The inbound loop pushed

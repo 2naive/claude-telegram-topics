@@ -1470,6 +1470,12 @@ let bunServer: { stop: (closeActiveConnections?: boolean) => void } | null = nul
 let reaperTimer: ReturnType<typeof setInterval> | null = null;
 let steppingDown = false;
 
+// Reaper cadence: dead entries clear within ~3 min worst-case (threshold +
+// interval), so a crashed console frees its topic for autostart quickly; the
+// graceful path (client unregister on shutdown) frees it instantly.
+const SESSION_DEAD_MS = 120_000;
+const REAPER_INTERVAL_MS = 60_000;
+
 /**
  * Graceful step-down for the version hand-off: a newer session announced
  * itself, so this leader retires and lets it take the port. The short delay
@@ -1600,15 +1606,33 @@ export async function tryBecomeLeader(): Promise<boolean> {
       stopLeader();
     });
 
-  // Idle-session reaper + inbox disk reclaim.
+  // Dead-session reaper + inbox disk reclaim. A live session's background
+  // inbound loop calls /poll every ≤25 s (and every control call refreshes
+  // lastActive), so 2 minutes of silence means the process is gone or wedged —
+  // the old 3 h threshold let a dead entry keep "owning" its topic: inbound
+  // was quietly queued to the corpse and autostart never fired (live
+  // incident). A wedged-but-alive session that wakes later just re-registers
+  // (its next /poll 404s, which the client handles).
   reaperTimer = setInterval(() => {
     const now = Date.now();
     for (const [id, s] of sessions) {
-      if (now - s.lastActive > 3 * 3600 * 1000) {
+      if (now - s.lastActive > SESSION_DEAD_MS) {
         const proj = s.project;
-        unbindTopic(id, s.topicId);
+        const topicId = s.topicId;
+        const orphans = s.queue.splice(0, s.queue.length);
+        unbindTopic(id, topicId);
         sessions.delete(id);
-        log("session.reaped", { sid: id });
+        log("session.reaped", { sid: id, queued: orphans.length });
+        // A corpse must not eat its undelivered queue: if no other live
+        // session serves this topic, re-hold the messages and kick the normal
+        // no-session recovery (notice / autostart) so they reach the
+        // relaunched session instead of vanishing. With live siblings the
+        // fan-out already gave them their own copies — re-holding would
+        // double-deliver.
+        if (orphans.length > 0 && (topicSessions.get(topicId)?.size ?? 0) === 0) {
+          for (const m of orphans) holdInbound(proj, m);
+          void postNoSessionNotice(topicId, proj);
+        }
         refreshTopicStatus(proj);
       }
     }
@@ -1639,7 +1663,7 @@ export async function tryBecomeLeader(): Promise<boolean> {
     } catch {
       // best-effort cleanup
     }
-  }, 300_000);
+  }, REAPER_INTERVAL_MS);
 
   steppingDown = false;
   leaderSince = Date.now();

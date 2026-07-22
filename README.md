@@ -147,11 +147,31 @@ Once the plugin is installed, load its channel with the standard flag:
 claude --channels plugin:telegram-topics@claude-telegram-topics
 ```
 
-(Older Claude Code builds only accepted Anthropic-allowlisted plugins there and
-needed `--dangerously-load-development-channels` instead — which shows a
-blocking "local development" confirmation on every start. If your build rejects
-`--channels` for this plugin, fall back to the dev flag; both are variadic, see
-below.)
+**⚠️ Allowlist first.** `--channels` wires a channel ONLY for plugins on the
+approved-channels allowlist; anything else is **silently** loaded as a plain
+MCP plugin — outbound tools work, but inbound messages never reach the session
+(an easy-to-miss half-broken state). Since this fork is not on Anthropic's
+default allowlist, add it via **managed settings**
+(`C:\ProgramData\ClaudeCode\managed-settings.json` on Windows,
+`/Library/Application Support/ClaudeCode/managed-settings.json` on macOS):
+
+```json
+{
+  "channelsEnabled": true,
+  "allowedChannelPlugins": [
+    { "plugin": "telegram-topics", "marketplace": "claude-telegram-topics" },
+    { "plugin": "telegram", "marketplace": "claude-plugins-official" }
+  ]
+}
+```
+
+The list **replaces** the default Anthropic allowlist — keep the official
+plugin's entry if you also use it. Sessions read the allowlist at startup, so
+restart them after creating the file. The alternative is
+`--dangerously-load-development-channels`, which bypasses the allowlist but
+shows a blocking "local development" confirmation on **every** start (so it
+cannot be used for hands-off remote relaunch). Both flags are variadic, see
+below.
 
 The channels flag takes the channel list **as its own argument** and consumes
 everything after it as channel names. **Put every other option (e.g.

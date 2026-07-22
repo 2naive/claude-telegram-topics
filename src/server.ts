@@ -327,6 +327,10 @@ function shutdown(reason: string): void {
   shuttingDown = true;
   process.stderr.write(`telegram-topics: shutting down (${reason})\n`);
   inboundRunning = false;
+  // Goodbye BEFORE the exit deadline: frees this session's topic on the leader
+  // immediately, so the next inbound triggers autostart instead of being
+  // queued to a corpse (fire-and-forget; the tightened idle reaper backstops).
+  channel.unregister();
   try {
     stopLeader();
   } catch {

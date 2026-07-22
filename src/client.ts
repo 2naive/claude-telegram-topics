@@ -383,3 +383,20 @@ export async function drainMessages(): Promise<Inbound[]> {
 export function currentTopic(): number | null {
   return topicId;
 }
+
+/**
+ * Best-effort goodbye on shutdown, so the leader frees this session at once.
+ * Without it a closed console left a dead registry entry that kept "owning"
+ * the topic — inbound was quietly queued to a corpse and autostart never
+ * fired (live incident; the idle reaper is only a slow backstop).
+ */
+export function unregister(): void {
+  if (!sessionId) return;
+  void fetch(`${BASE}/unregister`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ sessionId }),
+    signal: AbortSignal.timeout(1000),
+  }).catch(() => {});
+  sessionId = null;
+}
