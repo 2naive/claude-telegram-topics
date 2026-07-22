@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.12.3 — 2026-07-22
+
+- **Launched sessions no longer hang at the folder-trust prompt.** The spawn
+  cwd was the topic map's *normalized* (lowercased) key, but Claude Code keys
+  both its folder-trust record and its per-cwd conversation history by the
+  exact path string — so the launched session treated a long-trusted project
+  as a brand-new folder (interactive "do you trust this folder?" prompt, which
+  defeats hands-off recovery) and `--continue` would have missed the history
+  and started blank. The cwd is now canonicalized to its on-disk spelling
+  (`realpathSync.native`) before spawning.
+
 ## 0.12.2 — 2026-07-22
 
 - **Remote session launch actually launches (Windows).** The composed

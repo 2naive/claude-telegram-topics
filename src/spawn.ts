@@ -9,6 +9,7 @@
 // after the leader exits. Other platforms have no reliable headless TTY story,
 // so spawning is refused with a clear message instead of half-working.
 
+import { realpathSync } from "node:fs";
 import { log } from "./log.ts";
 import { normalizePath } from "./paths.ts";
 
@@ -98,6 +99,22 @@ export function buildStartLine(title: string, cmd: string): string {
 }
 
 /**
+ * Canonical on-disk spelling of a project path (drive letter + segment case).
+ * The topic map stores the NORMALIZED (lowercased) key, but Claude Code keys
+ * both its folder-trust record and its per-cwd conversation history by the
+ * exact path string — a session spawned with the lowercased spelling hung at
+ * the "do you trust this folder?" prompt (live incident) and `--continue`
+ * would look for history under the wrong key and start blank.
+ */
+function canonicalCwd(p: string): string {
+  try {
+    return realpathSync.native(p);
+  } catch {
+    return p; // path gone / native unavailable — spawn fails loudly downstream
+  }
+}
+
+/**
  * Spawn a detached session for the project. Returns null on success or a
  * user-facing error message. `projectPath` must come from topics.json (a
  * project the user has already bridged) — never from raw message text; it is
@@ -116,7 +133,7 @@ export function spawnSession(
   try {
     const line = buildStartLine(windowTitle(name), cmd);
     Bun.spawn(["cmd", "/c", line], {
-      cwd: projectPath,
+      cwd: canonicalCwd(projectPath),
       stdin: "ignore",
       stdout: "ignore",
       stderr: "ignore",

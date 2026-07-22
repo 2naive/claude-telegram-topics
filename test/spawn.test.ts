@@ -1,4 +1,7 @@
 import { describe, expect, test, spyOn } from "bun:test";
+import { mkdtempSync, rmSync, realpathSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   buildStartLine,
   windowTitle,
@@ -94,6 +97,31 @@ describe("windows arg passing (the \"Windows cannot find '\\tg_…\\'\" popup)",
       // If a future Bun stops mangling, this fails and the verbatim flag can
       // be revisited; until then it documents WHY the flag is load-bearing.
       expect(out).toContain('\\"tg_title\\"');
+    },
+  );
+
+  test.if(process.platform === "win32")(
+    "spawn cwd uses the canonical on-disk case, not the lowercased key",
+    () => {
+      // Claude Code keys folder trust AND per-cwd conversation history by the
+      // exact path string. Spawning with the normalized (lowercased) topic key
+      // hung the launched session at the "do you trust this folder?" prompt
+      // (live incident) and --continue would miss the history and start blank.
+      const real = mkdtempSync(join(tmpdir(), "TgCase-"));
+      try {
+        const canon = realpathSync.native(real);
+        const spy = spyOn(Bun, "spawn").mockReturnValue({} as never);
+        try {
+          expect(spawnSession(real.toLowerCase(), "x", false)).toBeNull();
+          const [, opts] = spy.mock.calls[0]! as [string[], Record<string, unknown>];
+          expect(opts.cwd).toBe(canon);
+          expect(opts.cwd).not.toBe(real.toLowerCase());
+        } finally {
+          spy.mockRestore();
+        }
+      } finally {
+        rmSync(real, { recursive: true, force: true });
+      }
     },
   );
 
