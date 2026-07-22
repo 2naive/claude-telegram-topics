@@ -17,8 +17,8 @@
 **Heads-up (docs):** `--channels` wires a channel ONLY for plugins on the
 approved-channels allowlist; anything else is silently loaded as a plain MCP
 plugin — tools work, inbound never arrives. For this fork, allowlist it via
-managed settings (`C:\ProgramData\ClaudeCode\managed-settings.json` on
-Windows): `"channelsEnabled": true` and `"allowedChannelPlugins":
+managed settings (`C:\Program Files\ClaudeCode\managed-settings.json` on
+Windows — admin required): `"channelsEnabled": true` and `"allowedChannelPlugins":
 [{"plugin": "telegram-topics", "marketplace": "claude-telegram-topics"}]` —
 note the list REPLACES the default Anthropic allowlist, so include
 `{"plugin": "telegram", "marketplace": "claude-plugins-official"}` too if you

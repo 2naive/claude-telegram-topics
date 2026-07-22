@@ -152,7 +152,8 @@ approved-channels allowlist; anything else is **silently** loaded as a plain
 MCP plugin — outbound tools work, but inbound messages never reach the session
 (an easy-to-miss half-broken state). Since this fork is not on Anthropic's
 default allowlist, add it via **managed settings**
-(`C:\ProgramData\ClaudeCode\managed-settings.json` on Windows,
+(`C:\Program Files\ClaudeCode\managed-settings.json` on Windows — admin
+required; or the `HKLM\SOFTWARE\Policies\ClaudeCode` registry key;
 `/Library/Application Support/ClaudeCode/managed-settings.json` on macOS):
 
 ```json
