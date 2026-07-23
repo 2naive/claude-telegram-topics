@@ -1,5 +1,5 @@
 import { describe, expect, test, spyOn } from "bun:test";
-import { mkdtempSync, rmSync, realpathSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -10,7 +10,9 @@ import {
   projectNameFromPath,
   launchRoots,
   spawnSession,
+  discoverLaunchable,
 } from "../src/spawn.ts";
+import { normalizePath } from "../src/paths.ts";
 
 describe("isPathAllowed (launch-by-path gate)", () => {
   const roots = ["c:/users/naive/claude"];
@@ -208,5 +210,33 @@ describe("launchCommand", () => {
       if (prev === undefined) delete process.env.TG_TOPICS_LAUNCH_CMD;
       else process.env.TG_TOPICS_LAUNCH_CMD = prev;
     }
+  });
+});
+
+describe("discoverLaunchable (the /list discovery section)", () => {
+  test("lists unbridged dirs under the roots; skips files, dot-dirs, bridged", () => {
+    const root = mkdtempSync(join(tmpdir(), "TgDiscover-"));
+    const prev = process.env.TG_TOPICS_LAUNCH_ROOTS;
+    try {
+      mkdirSync(join(root, "proj-a"));
+      mkdirSync(join(root, "proj-b"));
+      mkdirSync(join(root, ".hidden"));
+      writeFileSync(join(root, "not-a-dir.txt"), "x");
+      process.env.TG_TOPICS_LAUNCH_ROOTS = root;
+      const known = new Set([normalizePath(join(root, "proj-b"))]);
+      const found = discoverLaunchable(known);
+      expect(found.map((f) => f.name)).toEqual(["proj-a"]);
+      // canonical on-disk case, ready to be a spawn cwd
+      expect(found[0]!.path.toLowerCase()).toBe(join(root, "proj-a").toLowerCase());
+    } finally {
+      if (prev === undefined) delete process.env.TG_TOPICS_LAUNCH_ROOTS;
+      else process.env.TG_TOPICS_LAUNCH_ROOTS = prev;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("no roots configured (default-deny) — nothing advertised", () => {
+    // preload deletes TG_TOPICS_LAUNCH_ROOTS
+    expect(discoverLaunchable(new Set())).toEqual([]);
   });
 });

@@ -39,6 +39,7 @@ import { normalizePath } from "./paths.ts";
 import { channelAllowlistState } from "./allowlist.ts";
 import {
   isNewerVersion,
+  topicLink,
   parseCallback,
   permCallbackData,
   sessionPrefix,
@@ -71,6 +72,7 @@ import {
   isPathAllowed,
   launchRoots,
   projectNameFromPath,
+  discoverLaunchable,
 } from "./spawn.ts";
 import { existsSync } from "node:fs";
 import { log } from "./log.ts";
@@ -639,6 +641,51 @@ async function handleCommand(text: string, topicId: number | undefined): Promise
     await bot.api.sendMessage(GROUP_CHAT_ID, statusText(), thread).catch(() => {});
     return true;
   }
+  if (head === "/list") {
+    // Navigation counterpart to /status: one tappable line per project,
+    // deep-linking straight into its topic — so from General (the hub) you
+    // jump to a project without scrolling Telegram's topic list. Diagnostics
+    // (sessions, queues, uptime) stay in /status.
+    const projects = knownProjects().sort((a, b) =>
+      topicName(a).localeCompare(topicName(b)),
+    );
+    const bridged = projects
+      .map((project) => {
+        const tid = projectTopicId(project);
+        const glyph = statusGlyph(topicStatusOf(project));
+        const name = topicName(project);
+        const link = tid !== undefined ? topicLink(GROUP_CHAT_ID, tid) : null;
+        return link ? `${glyph} [${name}](${link})` : `${glyph} ${name}`;
+      })
+      .join("\n");
+    // Discovery: directories under the launch roots that are not bridged yet —
+    // each with a ready /start command (a code entity: tapping it copies).
+    const discovered = discoverLaunchable(new Set(projects));
+    const DISCOVER_CAP = 30;
+    let md = bridged || "(no bridged projects yet)";
+    if (discovered.length > 0) {
+      md +=
+        "\n\n**Launchable (not bridged yet — tap a command to copy):**\n" +
+        discovered
+          .slice(0, DISCOVER_CAP)
+          .map((d) => `▫️ ${d.name} — \`/start ${d.path}\``)
+          .join("\n");
+      if (discovered.length > DISCOVER_CAP) {
+        md += `\n… and ${discovered.length - DISCOVER_CAP} more`;
+      }
+    }
+    const formatted = mdToTelegram(md);
+    for (const chunk of splitTelegram(formatted.text, formatted.entities)) {
+      await bot.api
+        .sendMessage(GROUP_CHAT_ID, chunk.text, {
+          ...thread,
+          entities: chunk.entities,
+          link_preview_options: { is_disabled: true },
+        })
+        .catch(() => {});
+    }
+    return true;
+  }
   if (head === "/start") {
     // `/start <path>` launches a new project; bare `/start` shows the picker of
     // projects already bridged.
@@ -675,10 +722,14 @@ function initBot(): void {
     if (!isAllowedUser(m.from?.id)) return;
     const topicId = m.message_thread_id;
     // Leader-answered commands work everywhere, including the General topic.
-    // `/status` is intercepted only bare ("/status of the deploy" falls through
-    // to normal delivery); `/start` is intercepted bare OR with a path arg.
+    // `/status` and `/list` are intercepted only bare ("/status of the deploy"
+    // falls through to normal delivery); `/start` is intercepted bare OR with
+    // a path arg.
     const t = m.text?.trim();
-    if (t && (/^\/status(@\w+)?$/.test(t) || /^\/start(@\w+)?(\s+\S.*)?$/.test(t))) {
+    if (
+      t &&
+      (/^\/(status|list)(@\w+)?$/.test(t) || /^\/start(@\w+)?(\s+\S.*)?$/.test(t))
+    ) {
       if (await handleCommand(t, topicId)) return;
     }
     if (topicId === undefined) return; // General topic / non-topic messages ignored

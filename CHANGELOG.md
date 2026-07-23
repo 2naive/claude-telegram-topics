@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.16.0 — 2026-07-23
+
+- **`/list`** (any topic, incl. General) — the navigation counterpart to
+  `/status`: one tappable line per bridged project with its status glyph,
+  **deep-linking straight into the project's topic** (`t.me/c/…` — no
+  scrolling Telegram's topic list), plus a **Launchable** section listing
+  unbridged directories found under `TG_TOPICS_LAUNCH_ROOTS` (depth 1,
+  dot-dirs skipped, capped at 30), each with a ready `/start <path>` command
+  as a tap-to-copy code entity — so projects that merely exist on the machine
+  are discoverable from the phone, not just already-bridged ones. Diagnostics
+  (sessions, queues, uptime) stay in `/status`.
+
 ## 0.15.0 — 2026-07-23
 
 Onboarding for the channels allowlist — closing the worst first-run failure

@@ -9,7 +9,8 @@
 // after the leader exits. Other platforms have no reliable headless TTY story,
 // so spawning is refused with a clear message instead of half-working.
 
-import { realpathSync } from "node:fs";
+import { readdirSync, realpathSync, statSync } from "node:fs";
+import { join } from "node:path";
 import { log } from "./log.ts";
 import { normalizePath } from "./paths.ts";
 
@@ -115,12 +116,47 @@ export function buildStartLine(title: string, cmd: string): string {
  * the "do you trust this folder?" prompt (live incident) and `--continue`
  * would look for history under the wrong key and start blank.
  */
-function canonicalCwd(p: string): string {
+export function canonicalCwd(p: string): string {
   try {
     return realpathSync.native(p);
   } catch {
     return p; // path gone / native unavailable — spawn fails loudly downstream
   }
+}
+
+/**
+ * Directories under the launch roots that are NOT bridged yet — the `/list`
+ * discovery section: projects you could `/start` without remembering the path.
+ * Depth 1 per root, dot-dirs skipped, already-bridged keys excluded. Paths are
+ * canonicalized for display AND because the eventual spawn cwd must carry the
+ * on-disk case. Empty when TG_TOPICS_LAUNCH_ROOTS is unset — default-deny
+ * means nothing is launchable, so nothing is advertised.
+ */
+export function discoverLaunchable(
+  knownKeys: Set<string>,
+): Array<{ name: string; path: string }> {
+  const out: Array<{ name: string; path: string }> = [];
+  for (const root of launchRoots()) {
+    let entries: string[];
+    try {
+      entries = readdirSync(root);
+    } catch {
+      continue; // root missing/unreadable — nothing to discover there
+    }
+    for (const name of entries) {
+      if (name.startsWith(".")) continue;
+      const p = join(root, name);
+      try {
+        if (!statSync(p).isDirectory()) continue;
+      } catch {
+        continue;
+      }
+      if (knownKeys.has(normalizePath(p))) continue;
+      out.push({ name, path: canonicalCwd(p) });
+    }
+  }
+  out.sort((a, b) => a.name.localeCompare(b.name));
+  return out;
 }
 
 /**

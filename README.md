@@ -141,8 +141,8 @@ Also:
   (kept 24 h — see [State files](#state-files)).
 - The bot only listens inside the configured forum group's **topics**: DMs to
   the bot and messages in the **General** topic are ignored (General still
-  answers `/status` and `/start`), as are messages from users outside the
-  allowlist — silently, by design.
+  answers `/status`, `/list` and `/start`), as are messages from users outside
+  the allowlist — silently, by design.
 - The session replies with tools, all scoped to this project's topic:
 
 | Tool | Purpose |
@@ -180,6 +180,11 @@ You never have to guess whether the bridge is alive:
   name + session labels, or `N queued, no session`, or `no session`) and a
   legend line — so you see idle and offline projects too, not just live ones.
   Total silence means the bridge itself is down.
+- **`/list`** (in any topic, or General) — the navigation counterpart: one
+  tappable line per bridged project, **deep-linking straight into its topic**
+  (no scrolling Telegram's topic list), plus a **Launchable** section — unbridged
+  directories found under `TG_TOPICS_LAUNCH_ROOTS`, each with a ready
+  `/start <path>` command (tap the command to copy it).
 - **Typing indicator** — when your message is routed to a live session, the bot
   shows *typing…* in the topic for the whole turn (re-asserted every few seconds
   until the reply arrives), so a routed message and a dead bridge never look

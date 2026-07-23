@@ -281,3 +281,22 @@ describe("release invariants", () => {
     expect(pkg.version).toBe(plugin.version);
   });
 });
+
+describe("topicLink (the /list deep links)", () => {
+  const { topicLink } = require("../src/routing.ts");
+
+  test("builds a t.me/c link from a -100 supergroup id", () => {
+    expect(topicLink("-1002364817044", 378)).toBe("https://t.me/c/2364817044/378");
+  });
+
+  test("tolerates surrounding whitespace", () => {
+    expect(topicLink(" -1001234567890 ", 5)).toBe("https://t.me/c/1234567890/5");
+  });
+
+  test("no -100 prefix — no linkable form", () => {
+    expect(topicLink("-987654", 5)).toBeNull();
+    expect(topicLink("123456", 5)).toBeNull();
+    expect(topicLink("", 5)).toBeNull();
+    expect(topicLink("-100abc", 5)).toBeNull();
+  });
+});

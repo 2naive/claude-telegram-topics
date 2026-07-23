@@ -209,3 +209,14 @@ export function isNewerVersion(a: string, b: string): boolean {
   }
   return false;
 }
+
+/**
+ * Deep link to a forum topic — tap-to-jump navigation from General (the
+ * `/list` command). Private supergroup ids look like `-100<internal>`; the
+ * `t.me/c/` form drops that prefix. Returns null when the id has no such
+ * prefix (then there is no linkable form — callers fall back to plain text).
+ */
+export function topicLink(groupChatId: string, topicId: number): string | null {
+  const m = /^-100(\d+)$/.exec(groupChatId.trim());
+  return m ? `https://t.me/c/${m[1]}/${topicId}` : null;
+}
