@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.16.1 — 2026-07-23
+
+Three fixes from one night of live incidents:
+
+- **Spawned consoles no longer take the control port hostage.** A directly
+  spawned child inherits copies of ALL the leader's handles on Windows —
+  including its LISTEN socket — so any leader death with spawned consoles
+  alive left port 8787 LISTEN-ing under a dead pid: no re-election possible,
+  whole bridge dead (three occurrences in one night; diagnosis: a LISTEN whose
+  owning pid does not exist). Remote launch now goes through PowerShell
+  `Start-Process` (ShellExecute — no handle inheritance; probed empirically:
+  direct spawn = port hostage, Start-Process = port free). The working
+  directory rides inside the line; `windowsVerbatimArguments` is gone from
+  this path (PowerShell parses MSVCRT-style — Bun's default encoding is
+  correct for it).
+- **Autostart no longer duplicates a live session after a leadership change.**
+  A fresh leader starts with an empty registry; a message arriving before the
+  existing session re-registered (≤ ~30 s) triggered autostart and spawned a
+  second console that `--continue`d the SAME conversation. Autostart is now
+  deferred for a 45 s grace after `leader.up`: messages stay held, and the
+  deferred spawn fires only if the topic is still session-less.
+- **Deaf sessions can't lose messages silently anymore.** Delivery
+  confirmation used to arm only for sessions that had never turned — so a
+  session launched without the channels flag (plain `claude`) that turned from
+  the console looked healthy while every routed message vanished. Confirmation
+  now arms unless the project is provably mid-turn (recent hook activity +
+  working badge), and the give-up notice names the flagless launch as a
+  likely cause with the fix.
+
 ## 0.16.0 — 2026-07-23
 
 - **`/list`** (any topic, incl. General) — the navigation counterpart to

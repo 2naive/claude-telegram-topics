@@ -3,7 +3,8 @@ import { mkdtempSync, mkdirSync, rmSync, realpathSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  buildStartLine,
+  buildLaunchPs,
+  psQuote,
   windowTitle,
   launchCommand,
   isPathAllowed,
@@ -57,92 +58,65 @@ describe("windowTitle", () => {
   });
 });
 
-describe("buildStartLine", () => {
-  test("quotes the title so cmd start never treats it as the program", () => {
-    // The bug this pins: `start tg_foo cmd …` ran `tg_foo` (a plantable file in
-    // the cwd). A quoted title is always a title.
-    const line = buildStartLine("tg_foo", "claude --x");
-    expect(line).toBe('start "tg_foo" cmd /k claude --x');
-    expect(line.startsWith('start "')).toBe(true);
+describe("psQuote", () => {
+  test("wraps in single quotes and doubles embedded ones", () => {
+    expect(psQuote("plain")).toBe("'plain'");
+    expect(psQuote("O'Brien's")).toBe("'O''Brien''s'");
+    expect(psQuote("")).toBe("''");
   });
 });
 
-describe("windows arg passing (the \"Windows cannot find '\\tg_…\\'\" popup)", () => {
-  // Bun's default Windows arg encoding escapes embedded quotes C-runtime-style
-  // (\") — cmd.exe does not understand that, so the quoted window title reached
-  // `start` as `\"tg_x\"` and start resolved the PROGRAM to `\tg_x\`: an error
-  // popup and no session. spawnSession must pass the line VERBATIM.
-  test.if(process.platform === "win32")(
-    "verbatim spawn delivers embedded quotes to cmd intact",
-    async () => {
-      const line = 'echo PROBE "tg_title" tail';
-      const p = Bun.spawn(["cmd", "/c", line], {
-        stdout: "pipe",
-        stderr: "ignore",
-        windowsVerbatimArguments: true,
-      });
-      const out = await new Response(p.stdout).text();
-      expect(out).toContain('PROBE "tg_title" tail');
-      expect(out).not.toContain('\\"');
-    },
-  );
+describe("buildLaunchPs (non-inheriting launcher)", () => {
+  // Why Start-Process: a directly spawned console inherits copies of the
+  // leader's handles — including its LISTEN socket — so any leader death with
+  // spawned consoles alive left the control port LISTEN-ing under a dead pid
+  // and no new leader could bind (three live incidents in one night). Probed:
+  // direct spawn = port hostage, Start-Process (ShellExecute) = port free.
+  test("composes Start-Process with title, command and working dir", () => {
+    const line = buildLaunchPs("tg_x", "claude --flag", "C:\\Proj\\X");
+    expect(line).toBe(
+      "Start-Process -FilePath cmd.exe -ArgumentList '/k','title tg_x & claude --flag' " +
+        "-WorkingDirectory 'C:\\Proj\\X'",
+    );
+  });
 
-  test.if(process.platform === "win32")(
-    "default (non-verbatim) spawn mangles them — the regression this pins",
-    async () => {
-      const line = 'echo PROBE "tg_title" tail';
-      const p = Bun.spawn(["cmd", "/c", line], {
-        stdout: "pipe",
-        stderr: "ignore",
-      });
-      const out = await new Response(p.stdout).text();
-      // If a future Bun stops mangling, this fails and the verbatim flag can
-      // be revisited; until then it documents WHY the flag is load-bearing.
-      expect(out).toContain('\\"tg_title\\"');
-    },
-  );
+  test("PS-quotes embedded single quotes in cmd and cwd", () => {
+    const line = buildLaunchPs("tg_x", "claude --note 'hi'", "C:\\O'Brien");
+    expect(line).toContain("'title tg_x & claude --note ''hi'''");
+    expect(line).toContain("-WorkingDirectory 'C:\\O''Brien'");
+  });
+});
 
+describe("spawnSession mechanics", () => {
   test.if(process.platform === "win32")(
-    "spawn cwd uses the canonical on-disk case, not the lowercased key",
+    "spawns via powershell Start-Process with the canonical cwd inside the line",
     () => {
-      // Claude Code keys folder trust AND per-cwd conversation history by the
-      // exact path string. Spawning with the normalized (lowercased) topic key
-      // hung the launched session at the "do you trust this folder?" prompt
-      // (live incident) and --continue would miss the history and start blank.
+      // Pins BOTH launch lessons: (a) the console gets the canonical on-disk
+      // path (a lowercased cwd broke Claude Code's folder-trust and history
+      // lookups — live incident); (b) the launch goes through Start-Process,
+      // not a direct cmd spawn (handle-inheritance port hostage — live
+      // incident), and WITHOUT windowsVerbatimArguments: PowerShell parses
+      // MSVCRT-style, so Bun's default encoding is the correct one here.
       const real = mkdtempSync(join(tmpdir(), "TgCase-"));
       try {
         const canon = realpathSync.native(real);
         const spy = spyOn(Bun, "spawn").mockReturnValue({} as never);
         try {
-          expect(spawnSession(real.toLowerCase(), "x", false)).toBeNull();
-          const [, opts] = spy.mock.calls[0]! as [string[], Record<string, unknown>];
-          expect(opts.cwd).toBe(canon);
-          expect(opts.cwd).not.toBe(real.toLowerCase());
+          expect(spawnSession(real.toLowerCase(), "x", true)).toBeNull();
+          expect(spy).toHaveBeenCalledTimes(1);
+          const [argv, opts] = spy.mock.calls[0]! as [string[], Record<string, unknown>];
+          expect(argv).toEqual([
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            buildLaunchPs("tg_x", launchCommand(true), canon),
+          ]);
+          expect(opts.windowsVerbatimArguments).toBeUndefined();
         } finally {
           spy.mockRestore();
         }
       } finally {
         rmSync(real, { recursive: true, force: true });
-      }
-    },
-  );
-
-  test.if(process.platform === "win32")(
-    "spawnSession passes the start line verbatim — pins the fix itself",
-    () => {
-      // The two probes above pin Bun's ENCODING; this pins OUR call: without
-      // it, deleting windowsVerbatimArguments from spawnSession leaves the
-      // whole suite green while reproducing the live popup (mutation-tested).
-      const spy = spyOn(Bun, "spawn").mockReturnValue({} as never);
-      try {
-        expect(spawnSession("C:\\proj\\x", "x", true)).toBeNull();
-        expect(spy).toHaveBeenCalledTimes(1);
-        const [argv, opts] = spy.mock.calls[0]! as [string[], Record<string, unknown>];
-        expect(argv).toEqual(["cmd", "/c", `start "tg_x" cmd /k ${launchCommand(true)}`]);
-        expect(opts.windowsVerbatimArguments).toBe(true);
-        expect(opts.cwd).toBe("C:\\proj\\x");
-      } finally {
-        spy.mockRestore();
       }
     },
   );

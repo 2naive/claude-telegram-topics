@@ -160,17 +160,41 @@ function holdInbound(project: string, msg: Inbound): void {
   if (held.msgs.length > HELD_MAX) held.msgs.splice(0, held.msgs.length - HELD_MAX);
 }
 
+// Fresh leadership starts with an EMPTY session registry: existing sessions
+// re-register within one poll cycle (≤ ~30 s), but a message arriving before
+// that made autostart spawn a console for a project whose session was alive
+// all along — a duplicate resuming the same conversation (live incident).
+// During the grace window messages are held and the spawn is deferred; if the
+// session re-registers meanwhile, the held queue drains to it and no console
+// is spawned.
+const AUTOSTART_GRACE_MS = 45_000;
+const deferredAutostarts = new Set<ReturnType<typeof setTimeout>>();
+
 async function postNoSessionNotice(topicId: number, project: string): Promise<void> {
   const now = Date.now();
   if (now - (lastNotice.get(topicId) ?? 0) < NOTICE_COOLDOWN_MS) return;
   lastNotice.set(topicId, now);
   let note = "📴 No active session for this project — message queued.";
   if (autostartEnabled()) {
-    // Known project waking up (reboot/crash recovery) — resume its conversation.
-    const err = spawnSession(project, topicName(project), true);
-    note = err
-      ? `📴 No active session — message queued. Autostart failed: ${err}`
-      : "📴 No active session — message queued. 🚀 Starting one…";
+    const sinceLead = now - leaderSince;
+    if (sinceLead < AUTOSTART_GRACE_MS) {
+      note =
+        "📴 No active session — message queued. The leader just changed; giving existing sessions a moment to reconnect before starting one…";
+      const timer = setTimeout(() => {
+        deferredAutostarts.delete(timer);
+        if ((topicSessions.get(topicId)?.size ?? 0) > 0) return; // it reconnected
+        if (!heldInbox.has(project)) return; // nothing left to deliver
+        const err = spawnSession(project, topicName(project), true);
+        log("session.autostart.deferred", { project, error: err ?? "" });
+      }, AUTOSTART_GRACE_MS - sinceLead);
+      deferredAutostarts.add(timer);
+    } else {
+      // Known project waking up (reboot/crash recovery) — resume its conversation.
+      const err = spawnSession(project, topicName(project), true);
+      note = err
+        ? `📴 No active session — message queued. Autostart failed: ${err}`
+        : "📴 No active session — message queued. 🚀 Starting one…";
+    }
   }
   await bot.api
     .sendMessage(GROUP_CHAT_ID, note, {
@@ -217,10 +241,21 @@ function clearPendingConfirm(project: string): void {
 function armPendingConfirm(s: Session, msgs: Inbound[]): void {
   if (msgs.length === 0) return;
   const project = s.project;
-  // A project that has turned since this session came up is provably able to
-  // surface messages — arming there risks double-delivery on a long tool-less
-  // stretch mid-turn. Only the never-turned-fresh case gets confirmation.
-  if ((lastActivityAt.get(project) ?? 0) >= s.bornAt) return;
+  // Skip only when the project is provably MID-TURN right now (hook activity
+  // since this session registered, recent, and the badge agrees): re-arming
+  // there risks double-delivery, and the queued message legitimately surfaces
+  // after the turn. Everything else arms — including sessions that HAVE turned
+  // from the console but run without the channel half (flagless launch, live
+  // incident: delivered messages vanished with no retry and no notice because
+  // console turns made the session look healthy). The badge check alone can't
+  // be trusted here: the leader optimistically flips it to "working" for
+  // routed messages, which must not mask a deaf fresh session.
+  const last = lastActivityAt.get(project) ?? 0;
+  const midTurn =
+    last >= s.bornAt &&
+    Date.now() - last < 120_000 &&
+    topicStatusOf(project) === "working";
+  if (midTurn) return;
   const existing = pendingConfirm.get(project);
   if (existing) {
     existing.msgs.push(...msgs);
@@ -259,7 +294,7 @@ function confirmTimeout(project: string): void {
       // inbound — "resend the message" would be false hope.
       const allow = channelAllowlistState();
       const note = allow.ok
-        ? "⚠️ The session started but has not picked the message up — it may still be initializing. If nothing happens, resend the message."
+        ? "⚠️ The session has not picked the message up. If it is still starting it may catch up; if it was launched without the channels flag (a plain `claude`), it can never receive — close that console and relaunch from here (▶️ button / autostart), then resend."
         : "⚠️ The session cannot receive messages: the plugin is not on the channels allowlist, so --channels loads it without the inbound half. On the machine run /telegram-topics:allowlist (one admin prompt), or launch with --dangerously-load-development-channels, then restart the session.";
       void bot.api
         .sendMessage(GROUP_CHAT_ID, note, { message_thread_id: tid })
@@ -1884,6 +1919,9 @@ export function stopLeader(): void {
   for (const p of pendingConfirm.values()) clearTimeout(p.timer);
   pendingConfirm.clear();
   lastActivityAt.clear();
+  // A demoted leader must not fire a deferred autostart it armed while leading.
+  for (const t of deferredAutostarts) clearTimeout(t);
+  deferredAutostarts.clear();
   if (reaperTimer) {
     clearInterval(reaperTimer);
     reaperTimer = null;

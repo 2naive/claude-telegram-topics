@@ -90,22 +90,40 @@ export function projectNameFromPath(target: string): string {
   return (seg ?? "").trim() || target;
 }
 
-/** Console window title: strictly safe chars so cmd quoting can't break. */
+/** Console window title: strictly safe chars so shell quoting can't break. */
 export function windowTitle(name: string): string {
   const safe = name.replace(/[^A-Za-z0-9_-]+/g, "_").slice(0, 32) || "session";
   return `tg_${safe}`;
 }
 
+/** PowerShell single-quoted literal: the only escape is doubling the quote. */
+export function psQuote(s: string): string {
+  return "'" + s.replace(/'/g, "''") + "'";
+}
+
 /**
- * Build the `cmd /c` command line for a detached launch. The title MUST be
- * quoted: `start` treats the first *unquoted* token as the program to run, so
- * `start tg_foo cmd …` tried to execute `tg_foo` — which both broke the launch
- * and, worse, would run a `tg_foo.cmd`/`.exe` planted in the project directory.
- * A quoted title is always a title. windowTitle already restricts it to
- * [A-Za-z0-9_-], so nothing inside the quotes can break out.
+ * Build the PowerShell Start-Process line for a detached console launch.
+ *
+ * Why Start-Process and not `cmd /c start`: a child spawned directly inherits
+ * copies of ALL our handles on Windows — including the leader's LISTEN socket
+ * on the control port. Any leader death with such consoles alive then left the
+ * port LISTEN-ing under a dead pid: no re-election possible, whole bridge dead
+ * (three live incidents in one night). Start-Process goes through ShellExecute,
+ * which passes NO handles to the console; the intermediary powershell inherits
+ * them but exits right after launching, shrinking the hostage window to ~1 s.
+ * Probed empirically: direct spawn = port hostage, Start-Process = port free.
+ *
+ * The working directory rides inside the line (-WorkingDirectory) because the
+ * console must start in the project, not wherever the leader happens to run.
+ * All embedded values are PS single-quoted (psQuote); windowTitle is already
+ * restricted to [A-Za-z0-9_-].
  */
-export function buildStartLine(title: string, cmd: string): string {
-  return `start "${title}" cmd /k ${cmd}`;
+export function buildLaunchPs(title: string, cmd: string, cwd: string): string {
+  const inner = `title ${title} & ${cmd}`;
+  return (
+    `Start-Process -FilePath cmd.exe -ArgumentList '/k',${psQuote(inner)} ` +
+    `-WorkingDirectory ${psQuote(cwd)}`
+  );
 }
 
 /**
@@ -176,18 +194,15 @@ export function spawnSession(
   }
   const cmd = launchCommand(resume);
   try {
-    const line = buildStartLine(windowTitle(name), cmd);
-    Bun.spawn(["cmd", "/c", line], {
-      cwd: canonicalCwd(projectPath),
+    const line = buildLaunchPs(windowTitle(name), cmd, canonicalCwd(projectPath));
+    // NOTE: no windowsVerbatimArguments here — PowerShell parses MSVCRT-style
+    // quoting, so Bun's DEFAULT encoding is correct for it (the 0.12.2 verbatim
+    // lesson applies only when composing a line for cmd.exe, which this spawn
+    // no longer does).
+    Bun.spawn(["powershell", "-NoProfile", "-Command", line], {
       stdin: "ignore",
       stdout: "ignore",
       stderr: "ignore",
-      // The composed line must reach cmd VERBATIM. Bun's default Windows arg
-      // encoding escapes embedded quotes C-runtime-style (\") — which cmd.exe
-      // does not understand, so `start "tg_x" …` arrived as `start \"tg_x\" …`
-      // and start resolved the PROGRAM to `\tg_x\` ("Windows cannot find
-      // '\tg_x\'" popup, nothing launched, queued messages expired).
-      windowsVerbatimArguments: true,
     });
     log("session.spawn", { project: projectPath, cmd, resume });
     return null;
