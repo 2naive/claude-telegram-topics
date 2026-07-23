@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.17.0 — 2026-07-23
+
+- **Remote session lifecycle: `/stop` and `/new`** (in a project's topic).
+  `/stop` ends the topic's session(s) from the phone — each session reports
+  its claude process pid at registration, and the leader kills the process
+  tree via a detached `taskkill` (Start-Process — survives even when the
+  leader stops its own session; the fleet then re-elects, safe since 0.16.1).
+  `/new` does the same and immediately launches a **fresh** session (no
+  `--continue`) — the from-the-phone way to clear the context and start over.
+  Registry entries are removed synchronously, so a follow-up message triggers
+  a clean relaunch instead of queueing to a corpse. Pre-0.17.0 sessions report
+  no pid; the reply says so instead of pretending.
+- README documents both, plus the one-time Claude Code trust prompt on the
+  first-ever launch of a brand-new folder.
+
 ## 0.16.1 — 2026-07-23
 
 Three fixes from one night of live incidents:

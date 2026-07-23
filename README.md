@@ -137,7 +137,17 @@ Also:
   launches a brand-new project — gated by
   [`TG_TOPICS_LAUNCH_ROOTS`](#settings) (default-deny: launching a path named
   in a chat message is remote code-exec, so opt in with roots you trust).
-  Brand-new projects start fresh; relaunches resume.
+  Brand-new projects start fresh; relaunches resume. The **first-ever** launch
+  of a new folder shows Claude Code's own trust prompt on the machine (one
+  Enter); every later relaunch is hands-off.
+- **`/stop`** (in a project's topic) — end that project's session(s) from the
+  phone: the leader kills their claude process trees (each session reports its
+  pid at registration). A later message or ▶️ relaunches and **resumes** the
+  conversation. Sessions started by pre-0.17.0 clients report no pid and must
+  be closed on the machine.
+- **`/new`** (in a project's topic) — `/stop` + immediately launch a **fresh**
+  session (no `--continue`): the from-the-phone way to clear the context and
+  start over in the same topic.
 - Remote launch is **Windows-only** for now (it opens a real console window,
   so the session has a TTY and survives).
 

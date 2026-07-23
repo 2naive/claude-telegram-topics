@@ -136,6 +136,47 @@ export function identityResolved(): boolean {
   return cachedCwd !== null;
 }
 
+// --- The claude process pid (for remote /stop) ------------------------------
+//
+// Reported to the leader at registration so `/stop` / `/new` from Telegram can
+// end this session by killing the claude process tree. Two sources, same trust
+// rules as the identity ladder: (1) a parent-chain candidate whose session
+// record answers (direct chains); (2) the sessions/<pid>.json whose sessionId
+// matches ours — the record file is NAMED after the claude pid. Cached once
+// found: the pid cannot change within a session's lifetime.
+let cachedClaudePid: number | null = null;
+export function claudePid(): number | null {
+  if (cachedClaudePid !== null) return cachedClaudePid;
+  const envId = process.env.CLAUDE_CODE_SESSION_ID || "";
+  const cands = pidCandidates();
+  if (cands) {
+    for (const c of cands) {
+      const r = readSessionRecordFor(c.pid);
+      if (!r || typeof r.cwd !== "string" || !r.cwd.trim()) continue;
+      if (envId && r.sessionId && r.sessionId !== envId) continue;
+      cachedClaudePid = c.pid;
+      return c.pid;
+    }
+  }
+  if (envId) {
+    try {
+      for (const f of readdirSync(join(CONFIG_DIR, "sessions"))) {
+        if (!f.endsWith(".json")) continue;
+        const pid = parseInt(f, 10);
+        if (!Number.isFinite(pid) || pid <= 1) continue;
+        const rec = readSessionRecordFor(pid);
+        if (rec?.sessionId === envId) {
+          cachedClaudePid = pid;
+          return pid;
+        }
+      }
+    } catch {
+      // sessions dir unreadable — no pid, remote stop unavailable for us
+    }
+  }
+  return null;
+}
+
 /**
  * Bounded startup wait: give the session record a chance to appear before the
  * first registration, so a fresh (or reloaded) server doesn't register a

@@ -214,3 +214,17 @@ describe("discoverLaunchable (the /list discovery section)", () => {
     expect(discoverLaunchable(new Set())).toEqual([]);
   });
 });
+
+describe("buildStopPs (remote /stop, /new)", () => {
+  const { buildStopPs } = require("../src/spawn.ts");
+
+  test("detached taskkill of the process tree, hidden window", () => {
+    expect(buildStopPs(1234)).toBe(
+      "Start-Process -FilePath taskkill.exe -ArgumentList '/PID','1234','/T','/F' -WindowStyle Hidden",
+    );
+  });
+
+  test("coerces a fractional pid to an integer", () => {
+    expect(buildStopPs(99.9)).toContain("'/PID','99',");
+  });
+});

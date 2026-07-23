@@ -69,6 +69,7 @@ import { apiRetry } from "./tgretry.ts";
 import {
   autostartEnabled,
   spawnSession,
+  stopProcessTree,
   isPathAllowed,
   launchRoots,
   projectNameFromPath,
@@ -95,6 +96,9 @@ type Session = {
   /** Registration time — delivery confirmation applies only to sessions whose
    * project has not turned since this moment (the fresh-spawn loss window). */
   bornAt: number;
+  /** The session's claude process pid (reported at register) — lets /stop and
+   * /new end the session remotely. Absent on pre-0.17.0 clients. */
+  pid?: number;
 };
 
 const INBOX_DIR = join(STATE_DIR, "inbox");
@@ -721,6 +725,61 @@ async function handleCommand(text: string, topicId: number | undefined): Promise
     }
     return true;
   }
+  if (head === "/stop" || head === "/new") {
+    // Remote session lifecycle: /stop ends this topic's session(s) by killing
+    // their claude process trees; /new does the same and immediately launches
+    // a FRESH session (no --continue) — the from-the-phone way to clear
+    // context. Topic-scoped: General has no project to act on.
+    const say = (text: string): Promise<unknown> =>
+      bot.api.sendMessage(GROUP_CHAT_ID, text, thread).catch(() => {});
+    if (topicId === undefined) {
+      await say(`Run ${head} inside a project's topic.`);
+      return true;
+    }
+    const project = projectForTopic(topicId);
+    if (!project) {
+      await say("No project is bridged to this topic.");
+      return true;
+    }
+    const sids = [...(topicSessions.get(topicId) ?? [])];
+    let stopped = 0;
+    let unstoppable = 0;
+    // Reply BEFORE killing: if the target includes the leader's own session,
+    // the kill takes this process down with it (by design — the detached
+    // taskkill survives us and the fleet re-elects).
+    if (head === "/stop") {
+      await say(
+        sids.length === 0
+          ? "No live session here — nothing to stop. (A queued message or ▶️ starts one.)"
+          : "⏹ Stopping… A new message (or ▶️) relaunches and RESUMES the conversation; use /new for a fresh one.",
+      );
+    } else {
+      await say(
+        "🆕 Starting a fresh session — previous context will NOT be carried over.",
+      );
+    }
+    for (const sid of sids) {
+      const s = sessions.get(sid);
+      if (!s) continue;
+      if (s.pid !== undefined && stopProcessTree(s.pid)) stopped++;
+      else unstoppable++;
+      unbindTopic(sid, s.topicId);
+      sessions.delete(sid);
+    }
+    clearPendingConfirm(project);
+    log("session.stopcmd", { cmd: head, project, stopped, unstoppable });
+    if (unstoppable > 0) {
+      await say(
+        `⚠️ ${unstoppable} session(s) did not report a pid (pre-0.17.0 or non-Windows) — close them on the machine.`,
+      );
+    }
+    if (head === "/new") {
+      const err = spawnSession(project, topicName(project), false); // fresh
+      if (err) await say(`⚠️ ${truncate(err, 180)}`);
+    }
+    refreshTopicStatus(project);
+    return true;
+  }
   if (head === "/start") {
     // `/start <path>` launches a new project; bare `/start` shows the picker of
     // projects already bridged.
@@ -763,7 +822,8 @@ function initBot(): void {
     const t = m.text?.trim();
     if (
       t &&
-      (/^\/(status|list)(@\w+)?$/.test(t) || /^\/start(@\w+)?(\s+\S.*)?$/.test(t))
+      (/^\/(status|list|stop|new)(@\w+)?$/.test(t) ||
+        /^\/start(@\w+)?(\s+\S.*)?$/.test(t))
     ) {
       if (await handleCommand(t, topicId)) return;
     }
@@ -1401,12 +1461,13 @@ async function handle(req: Request): Promise<Response> {
   }
 
   if (path === "/register" && req.method === "POST") {
-    const { project, name, label, prev, version } = (await req.json()) as {
+    const { project, name, label, prev, version, pid } = (await req.json()) as {
       project: string;
       name: string;
       label?: string;
       prev?: string;
       version?: string;
+      pid?: number;
     };
     // Version handshake: a session running newer code must lead, or every
     // plugin update silently keeps the old leader's bugs alive until the user
@@ -1436,6 +1497,7 @@ async function handle(req: Request): Promise<Response> {
       waiterTimer: null,
       lastActive: Date.now(),
       bornAt: Date.now(),
+      pid: typeof pid === "number" && Number.isFinite(pid) && pid > 1 ? pid : undefined,
     };
     sessions.set(id, fresh);
     bindTopic(id, topicId);

@@ -8,6 +8,7 @@
 
 import { CONTROL_PORT, VERSION, isRealProjectKey } from "./config.ts";
 import {
+  claudePid,
   identityResolved,
   projectKey,
   projectName,
@@ -124,6 +125,10 @@ async function register(honorHandoff = true): Promise<void> {
       label: sessionLabel(),
       prev: lastSessionId ?? undefined,
       version: VERSION,
+      // The claude process pid — lets /stop and /new end this session from
+      // Telegram by killing the process tree. null when unresolvable (the
+      // leader then reports the session as not remotely stoppable).
+      pid: claudePid() ?? undefined,
     }),
     signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
   });

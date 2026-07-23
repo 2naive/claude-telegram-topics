@@ -177,6 +177,37 @@ export function discoverLaunchable(
   return out;
 }
 
+/** Build the detached kill line for a session's claude process tree. */
+export function buildStopPs(pid: number): string {
+  return (
+    `Start-Process -FilePath taskkill.exe -ArgumentList ` +
+    `'/PID','${Math.floor(pid)}','/T','/F' -WindowStyle Hidden`
+  );
+}
+
+/**
+ * End a session by killing its claude process tree (remote /stop, /new).
+ * Start-Process detaches the taskkill, so this works even when the CALLER sits
+ * inside the tree being killed (stopping the leader's own session: the kill
+ * survives the leader's death and the fleet re-elects — safe now that spawned
+ * consoles no longer inherit the listen socket).
+ */
+export function stopProcessTree(pid: number): boolean {
+  if (process.platform !== "win32") return false;
+  try {
+    Bun.spawn(["powershell", "-NoProfile", "-Command", buildStopPs(pid)], {
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    log("session.stop", { pid });
+    return true;
+  } catch (e) {
+    log("session.stop.fail", { pid, error: String(e) });
+    return false;
+  }
+}
+
 /**
  * Spawn a detached session for the project. Returns null on success or a
  * user-facing error message. `projectPath` must come from topics.json (a
