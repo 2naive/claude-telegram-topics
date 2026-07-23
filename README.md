@@ -100,8 +100,16 @@ Worth doing next: make the launch one word ([Launch alias](#launch-alias)) and
 set `TG_TOPICS_AUTOSTART=1` so dead projects resurrect on a message
 ([next section](#recovery--autostart)).
 
-Note: until the token is configured, the plugin shows as *failed*
-(`missing TELEGRAM_BOT_TOKEN…`) — that is expected; configure and relaunch.
+Notes:
+
+- Until the token is configured, the plugin shows as *failed*
+  (`missing TELEGRAM_BOT_TOKEN…`) — that is expected; configure and relaunch.
+- `/reload-plugins` is safe **here** — on first install no channel server is
+  running yet, and reloading is what makes the `/telegram-topics:*` skills
+  available in the current session. After **upgrades** the rule flips:
+  **restart the session, don't reload** — reloading respawns a live bridge in
+  place, with all the failure modes that entails (see
+  [Upgrading](#upgrading)).
 
 ## Recovery & autostart
 
