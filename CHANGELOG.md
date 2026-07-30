@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.17.1 — 2026-07-30
+
+- **`/start <path>` of an already-bridged project now RESUMES** its
+  conversation (`--continue`), matching the ▶️ button and autostart. Only a
+  genuinely new path starts fresh. Previously the explicit-path form always
+  started blank — surprising for a known project (use `/new` to force a fresh
+  start).
+- **A recreated topic explains itself.** When the mapped topic was deleted on
+  Telegram, the plugin recreates it and repoints — it now posts a one-line
+  notice in the NEW topic ("the previous topic was deleted, messages go here"),
+  so the move no longer looks like a mysterious duplicate. (Old topics deleted
+  on the Telegram side can't be recovered; `/list` always shows the one live
+  topic per project.)
+
 ## 0.17.0 — 2026-07-23
 
 - **Remote session lifecycle: `/stop` and `/new`** (in a project's topic).

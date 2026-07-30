@@ -652,6 +652,11 @@ async function startByPath(
   }
   const key = normalizePath(rawPath);
   const name = projectNameFromPath(rawPath);
+  // A project already in the topic map is a RELAUNCH — resume its conversation,
+  // exactly like the ▶️ button and autostart. Only a genuinely new path starts
+  // fresh (nothing to resume). This is checked BEFORE resolveTopic, which would
+  // otherwise create the entry and make every /start look "known".
+  const resume = projectTopicId(key) !== undefined;
   let topicId: number;
   try {
     topicId = await resolveTopic(bot.api, key, name);
@@ -664,10 +669,14 @@ async function startByPath(
     await say(`"${name}" already has ${live} live session(s).`);
     return;
   }
-  const err = spawnSession(rawPath, name);
-  log("session.startpath", { path: rawPath, key, topicId, error: err ?? "" });
+  const err = spawnSession(rawPath, name, resume);
+  log("session.startpath", { path: rawPath, key, topicId, resume, error: err ?? "" });
   await say(
-    err ? `⚠️ ${truncate(err, 180)}` : `🚀 Launching "${name}" — it registers within ~30 s.`,
+    err
+      ? `⚠️ ${truncate(err, 180)}`
+      : resume
+        ? `🔄 Resuming "${name}" — it registers within ~30 s and continues the last conversation.`
+        : `🚀 Launching a fresh "${name}" — it registers within ~30 s.`,
   );
 }
 
@@ -1163,6 +1172,20 @@ async function withRecovery<T>(
     if (!isThreadGone(e)) throw e;
     const old = s.topicId;
     const fresh = await recreateTopic(bot.api, s.project);
+    if (fresh !== old) {
+      // The mapped topic was deleted on Telegram's side; a new one was created
+      // and the map repointed. Say so in the NEW topic, or the move looks like
+      // a mysterious duplicate — the old topic (with its history) is stranded
+      // where it was, and messages now land here. Once per recreate.
+      log("topic.recreate.notice", { project: s.project, old, fresh });
+      void bot.api
+        .sendMessage(
+          GROUP_CHAT_ID,
+          "ℹ️ The previous topic for this project was deleted, so this fresh one replaces it — messages now go here. (Any history in the old topic stays where it was.)",
+          { message_thread_id: fresh },
+        )
+        .catch(() => {});
+    }
     // Migrate every session bound to the dead topic onto the fresh one.
     const set = topicSessions.get(old);
     if (set) {
