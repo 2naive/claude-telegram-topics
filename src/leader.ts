@@ -32,6 +32,8 @@ import {
   projectForTopic,
   projectTopicId,
   recreateTopic,
+  relinkTopic,
+  reloadMap,
   resolveTopic,
   topicName,
 } from "./topics.ts";
@@ -119,6 +121,23 @@ function unbindTopic(sid: string, topicId: number): void {
     set.delete(sid);
     if (set.size === 0) topicSessions.delete(topicId);
   }
+}
+
+// After the topic map changes under live sessions (/relink, /reload-map), move
+// every session onto its project's current topic id so routing and badges land
+// where the map now points. Returns the number of sessions moved.
+function resyncSessionTopics(): number {
+  let moved = 0;
+  for (const s of sessions.values()) {
+    const tid = projectTopicId(s.project);
+    if (tid !== undefined && tid !== s.topicId) {
+      unbindTopic(s.id, s.topicId);
+      s.topicId = tid;
+      bindTopic(s.id, tid);
+      moved++;
+    }
+  }
+  return moved;
 }
 
 function wake(s: Session): void {
@@ -680,13 +699,74 @@ async function startByPath(
   );
 }
 
+// Resolve a /relink argument to a bridged project key: an exact normalized key,
+// else a unique case-insensitive folder-name match. Returns { key } on success,
+// or { candidates } listing the ambiguous/none matches for a helpful reply.
+function resolveProjectArg(
+  arg: string,
+): { key: string } | { candidates: string[] } {
+  const projects = knownProjects();
+  const nk = normalizePath(arg);
+  if (projects.includes(nk)) return { key: nk };
+  const wanted = arg.trim().toLowerCase();
+  const byName = projects.filter((p) => topicName(p).toLowerCase() === wanted);
+  if (byName.length === 1) return { key: byName[0]! };
+  return { candidates: byName };
+}
+
 async function handleCommand(text: string, topicId: number | undefined): Promise<boolean> {
   const sp = text.search(/\s/);
   const head = (sp === -1 ? text : text.slice(0, sp)).split("@")[0]!.trim();
   const arg = sp === -1 ? "" : text.slice(sp + 1).trim();
   const thread = topicId === undefined ? {} : { message_thread_id: topicId };
+  const say = (t: string): Promise<unknown> =>
+    bot.api.sendMessage(GROUP_CHAT_ID, t, thread).catch(() => {});
   if (head === "/status") {
     await bot.api.sendMessage(GROUP_CHAT_ID, statusText(), thread).catch(() => {});
+    return true;
+  }
+  if (head === "/reload-map") {
+    // Re-read topics.json into the running leader (after a hand-edit), instead
+    // of restarting the leader — which risks a version downgrade if an older
+    // session re-elects first (live incident).
+    const n = reloadMap();
+    const moved = resyncSessionTopics();
+    log("map.reload", { projects: n, moved });
+    await say(`🔄 Reloaded the topic map — ${n} project(s)${moved ? `, moved ${moved} live session(s)` : ""}.`);
+    return true;
+  }
+  if (head === "/relink") {
+    // Link the topic this command is run in to a bridged project — recovery
+    // when the mapped topic was deleted and a stray survivor holds the history.
+    if (topicId === undefined) {
+      await say("Run /relink inside the topic you want to link, e.g. `/relink greensms-static`.");
+      return true;
+    }
+    if (!arg) {
+      await say("Usage: `/relink <project>` — run inside the target topic. `/list` shows project names.");
+      return true;
+    }
+    const res = resolveProjectArg(arg);
+    if (!("key" in res)) {
+      await say(
+        res.candidates.length > 1
+          ? `Ambiguous — ${res.candidates.map((k) => topicName(k)).join(", ")} all match "${truncate(arg, 40)}". Use the full path.`
+          : `No bridged project matches "${truncate(arg, 60)}". \`/list\` shows the names.`,
+      );
+      return true;
+    }
+    const key = res.key;
+    const old = projectTopicId(key);
+    if (old === topicId) {
+      await say(`"${topicName(key)}" is already linked to this topic.`);
+      return true;
+    }
+    relinkTopic(key, topicId, topicName(key));
+    const moved = resyncSessionTopics();
+    log("relink", { key, from: old ?? 0, to: topicId, moved });
+    await say(
+      `🔗 Linked "${topicName(key)}" to this topic — messages here now reach it${moved ? ` (moved ${moved} live session(s))` : ""}. The old topic is no longer used.`,
+    );
     return true;
   }
   if (head === "/list") {
@@ -739,8 +819,6 @@ async function handleCommand(text: string, topicId: number | undefined): Promise
     // their claude process trees; /new does the same and immediately launches
     // a FRESH session (no --continue) — the from-the-phone way to clear
     // context. Topic-scoped: General has no project to act on.
-    const say = (text: string): Promise<unknown> =>
-      bot.api.sendMessage(GROUP_CHAT_ID, text, thread).catch(() => {});
     if (topicId === undefined) {
       await say(`Run ${head} inside a project's topic.`);
       return true;
@@ -831,8 +909,8 @@ function initBot(): void {
     const t = m.text?.trim();
     if (
       t &&
-      (/^\/(status|list|stop|new)(@\w+)?$/.test(t) ||
-        /^\/start(@\w+)?(\s+\S.*)?$/.test(t))
+      (/^\/(status|list|stop|new|reload-map)(@\w+)?$/.test(t) ||
+        /^\/(start|relink)(@\w+)?(\s+\S.*)?$/.test(t))
     ) {
       if (await handleCommand(t, topicId)) return;
     }

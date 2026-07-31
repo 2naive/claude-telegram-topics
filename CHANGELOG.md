@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.17.2 — 2026-07-31
+
+- **`/relink <project>`** (run inside a topic) — repoint a project at the topic
+  the command is run in, persisting. Recovery for the stale-mapping case: the
+  mapped topic was deleted on Telegram and a stray duplicate survives with the
+  history (live incident: greensms-static mapped to a deleted `1024` while the
+  user only had `693`), which silently drops messages sent to the survivor.
+  Resolves the project by exact key or unique folder name; moves any live
+  sessions onto the topic.
+- **`/reload-map`** (any topic) — re-read `topics.json` into the running leader
+  after a hand-edit, **without a restart**. Reloading by restarting the leader
+  can downgrade it (an older session re-elects and grabs the port first — live
+  incident, 0.17.1 → 0.16.1); `/reload-map` avoids that entirely.
+
 ## 0.17.1 — 2026-07-30
 
 - **`/start <path>` of an already-bridged project now RESUMES** its

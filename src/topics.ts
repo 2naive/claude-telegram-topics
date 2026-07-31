@@ -220,3 +220,27 @@ export function projectTopicId(key: string): number | undefined {
 export function topicName(key: string): string {
   return map[key]?.name ?? key;
 }
+
+/**
+ * Re-read the on-disk map into memory (after a hand-edit), WITHOUT a leader
+ * restart — the runtime alternative to killing the leader just to reload
+ * topics.json, which risks a version downgrade when older sessions re-elect
+ * first. Disk is authoritative (every change persists), so a plain reassign is
+ * safe. Returns the entry count.
+ */
+export function reloadMap(): number {
+  map = load();
+  return Object.keys(map).length;
+}
+
+/**
+ * Point a project key at an existing topic id, persisting — the /relink
+ * recovery when the mapped topic was deleted and a stray survivor holds the
+ * history (live incident: greensms-static mapped to a deleted 1024 while the
+ * user only had 693). createdAt is preserved if the key was already mapped.
+ */
+export function relinkTopic(key: string, topicId: number, name: string): void {
+  map[key] = { topicId, name, createdAt: map[key]?.createdAt ?? Date.now() };
+  persist();
+  log("topic.relink", { key, topicId });
+}

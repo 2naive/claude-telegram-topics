@@ -148,6 +148,14 @@ Also:
 - **`/new`** (in a project's topic) — `/stop` + immediately launch a **fresh**
   session (no `--continue`): the from-the-phone way to clear the context and
   start over in the same topic.
+- **`/relink <project>`** (run **inside** the topic you want to keep) — repoint
+  a project at this topic. Recovery for when the mapped topic was deleted on
+  Telegram and a stray duplicate survives with the history: run `/relink
+  greensms-static` in the surviving topic and messages there reach the project
+  again (the old mapping is dropped). `/list` shows the project names.
+- **`/reload-map`** (any topic) — re-read `topics.json` into the running leader
+  after a hand-edit, without restarting it (a restart can downgrade the leader
+  if an older session re-elects first).
 - Remote launch is **Windows-only** for now (it opens a real console window,
   so the session has a TTY and survives).
 

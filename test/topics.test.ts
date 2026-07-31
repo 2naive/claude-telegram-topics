@@ -114,6 +114,32 @@ describe("identity guard (fix B): never create a topic for the config tree", () 
   });
 });
 
+describe("relinkTopic + reloadMap (/relink, /reload-map)", () => {
+  test("relink points a project at a new topic id and persists", async () => {
+    const { api } = fakeApi();
+    const key = normalizePath("/tmp/project-relink");
+    const first = await topics.resolveTopic(api, key, "project-relink");
+    topics.relinkTopic(key, 55555, "project-relink");
+    expect(topics.projectTopicId(key)).toBe(55555);
+    expect(topics.projectForTopic(55555)).toBe(key);
+    expect(55555).not.toBe(first);
+    // persisted to disk
+    const onDisk = JSON.parse(readFileSync(TOPICS_FILE, "utf8"));
+    expect(onDisk[key].topicId).toBe(55555);
+  });
+
+  test("reloadMap re-reads the on-disk map (picks up a hand-edit)", () => {
+    const key = normalizePath("/tmp/project-handedit");
+    const cur = JSON.parse(readFileSync(TOPICS_FILE, "utf8"));
+    cur[key] = { topicId: 42424, name: "project-handedit", createdAt: 1 };
+    writeFileSync(TOPICS_FILE, JSON.stringify(cur));
+    expect(topics.projectTopicId(key)).toBeUndefined(); // not in memory yet
+    const n = topics.reloadMap();
+    expect(n).toBeGreaterThan(0);
+    expect(topics.projectTopicId(key)).toBe(42424); // now loaded
+  });
+});
+
 describe("cross-process idempotency (fix C)", () => {
   test("reuses a topic a sibling persisted since our map was loaded", async () => {
     const { api, calls } = fakeApi();
