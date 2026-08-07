@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.17.3 — 2026-08-07
+
+- **Autostarted sessions register again** (Windows). A remote-launched console
+  never registered with the bridge on a recent Claude Code: its badge stayed
+  💤 and the queued message expired unanswered, even though `claude` and the
+  plugin's MCP server were both alive. Root cause: the identity probe walked
+  only the parent + grandparent to find the `claude` pid (whose
+  `sessions/<pid>.json` carries the real project cwd), but the Start-Process
+  launcher added since 0.16.1 nests the MCP server four levels below `claude`
+  (`claude → cmd → bun → cmd → server.ts`). The pid was missed, identity fell
+  back to the plugin cache dir, the `isRealProjectKey` guard rejected it, and
+  the client deferred registration forever. The Windows probe now walks the
+  full ancestor chain (`CLAUDE_CODE_SESSION_ID`, which used to paper over this,
+  is no longer relied on). POSIX chains are shallow (remote launch is
+  Windows-only) and unchanged.
+
 ## 0.17.2 — 2026-07-31
 
 - **`/relink <project>`** (run inside a topic) — repoint a project at the topic

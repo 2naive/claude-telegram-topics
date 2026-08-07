@@ -1,10 +1,22 @@
 // Parent-chain resolution.
 //
 // Claude Code writes each session's record to <config>/sessions/<pid>.json
-// where <pid> is the CLAUDE process pid — and the claude process is this
-// server's grandparent (claude -> bun wrapper -> bun server.ts), or its parent
-// on a direct spawn. Resolving that pid lets identity work even when the
-// CLAUDE_CODE_SESSION_ID env var is missing (observed after /reload-plugins).
+// where <pid> is the CLAUDE process pid. Resolving that pid lets identity work
+// even when the CLAUDE_CODE_SESSION_ID env var is missing (observed after
+// /reload-plugins, and — live incident — for autostart-spawned sessions on a
+// recent Claude Code).
+//
+// How far up the claude pid sits depends on how the session was launched:
+//  - manual `cct`: claude -> bun wrapper -> bun server.ts — claude is the
+//    GRANDPARENT (2 levels), which the old 2-level probe caught.
+//  - remote autostart (Windows): the Start-Process launcher (0.16.1, to stop
+//    the port-hostage) adds cmd layers — claude -> cmd -> bun -> cmd -> bun
+//    server.ts — claude is FOUR levels up. The 2-level probe missed it, so
+//    identity fell back to process.cwd() = the plugin cache dir, which the
+//    isRealProjectKey guard rejects, so the client deferred registration
+//    forever and the session NEVER registered (badge 💤, message expired
+//    unanswered). Windows therefore walks the FULL ancestor chain; the deep
+//    chain is Windows-only (remote launch is), so POSIX stays at 2 levels.
 //
 // The platform query is fired ONCE, asynchronously, at import — a synchronous
 // query here would block the MCP event loop for seconds right in the startup
@@ -74,30 +86,37 @@ function startQuery(): void {
   }
 
   if (process.platform === "win32") {
-    // One PowerShell invocation: grandparent pid + both creation times (ms).
+    // One PowerShell invocation walks the whole ancestor chain from ppid up,
+    // emitting `pid|creationMs` per level (';'-separated). Bounded to 16 to
+    // avoid a runaway; the real chain is ~5. Each candidate is later checked
+    // against sessions/<pid>.json (only the real claude pid has a record), so
+    // walking extra non-claude ancestors is safe.
     const script =
       `$ErrorActionPreference='SilentlyContinue';` +
-      `$p=Get-CimInstance Win32_Process -Filter 'ProcessId=${ppid}';` +
-      `if($p){$ps=([DateTimeOffset]$p.CreationDate).ToUnixTimeMilliseconds();` +
-      `$g=Get-CimInstance Win32_Process -Filter \"ProcessId=$($p.ParentProcessId)\";` +
-      `if($g){$gs=([DateTimeOffset]$g.CreationDate).ToUnixTimeMilliseconds();` +
-      `Write-Output \"$($p.ParentProcessId)|$ps|$gs\"}else{Write-Output \"|$ps|\"}}`;
+      `$id=${ppid};$out=@();` +
+      `for($i=0;$i -lt 16;$i++){` +
+      `$p=Get-CimInstance Win32_Process -Filter \"ProcessId=$id\";` +
+      `if(-not $p){break};` +
+      `$ms=([DateTimeOffset]$p.CreationDate).ToUnixTimeMilliseconds();` +
+      `$out+=(\"$id|$ms\");` +
+      `$id=$p.ParentProcessId;` +
+      `if(-not $id -or $id -le 1){break}};` +
+      `Write-Output ($out -join ';')`;
     run(
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-Command", script],
       (out) => {
-        if (!out) return finish([{ pid: ppid, startedAt: null }]);
-        const [gpRaw, ppStartRaw, gpStartRaw] = out.trim().split("|");
-        const gp = parseInt(gpRaw ?? "", 10);
-        const ppStart = parseInt(ppStartRaw ?? "", 10);
-        const gpStart = parseInt(gpStartRaw ?? "", 10);
-        const list: PidInfo[] = [
-          { pid: ppid, startedAt: Number.isFinite(ppStart) ? ppStart : null },
-        ];
-        if (Number.isFinite(gp) && gp > 1 && gp !== ppid) {
-          list.push({ pid: gp, startedAt: Number.isFinite(gpStart) ? gpStart : null });
+        if (!out || !out.trim()) return finish([{ pid: ppid, startedAt: null }]);
+        const list: PidInfo[] = [];
+        for (const tok of out.trim().split(";")) {
+          const [pidRaw, msRaw] = tok.split("|");
+          const pid = parseInt(pidRaw ?? "", 10);
+          const ms = parseInt(msRaw ?? "", 10);
+          if (Number.isFinite(pid) && pid > 1) {
+            list.push({ pid, startedAt: Number.isFinite(ms) ? ms : null });
+          }
         }
-        finish(list);
+        finish(list.length ? list : [{ pid: ppid, startedAt: null }]);
       },
     );
     return;
@@ -143,10 +162,11 @@ function startQuery(): void {
 startQuery();
 
 /**
- * Candidate claude pids with start times, cheapest-guess first: [parent,
- * grandparent?]. `null` while the one-shot platform query is still warming —
- * callers treat that as "identity not yet resolvable" and retry on their own
- * cadence.
+ * Candidate claude pids with start times, nearest ancestor first: on Windows
+ * the full ppid chain (claude can be several levels up behind the launcher's
+ * cmd/bun layers); on POSIX [parent, grandparent?]. `null` while the one-shot
+ * platform query is still warming — callers treat that as "identity not yet
+ * resolvable" and retry on their own cadence.
  */
 export function pidCandidates(): PidInfo[] | null {
   return queryFinished ? candidates : null;
