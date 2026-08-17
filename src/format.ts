@@ -10,7 +10,8 @@
 //
 // Supported (recursive inline scanner, so emphasis nests and may span a soft
 // line break): fenced code blocks (length-aware ``` / ```` fences), GFM tables
-// (rendered as an aligned monospace grid — Telegram has no table markup),
+// (narrow → aligned monospace grid, wide → stacked per-row cards — Telegram has
+// no table markup and phone clients WRAP pre lines rather than scroll),
 // inline code, [text](url) links and ![alt](url) images, <https://…> autolinks,
 // **bold**, _italic_ / *italic* at word boundaries only, ~~strikethrough~~,
 // `# ` headings (rendered bold), and backslash escapes for literal marker chars.
@@ -242,7 +243,15 @@ function emitInline(src: string, out: Out): void {
   }
 }
 
-// --- GFM tables -> aligned monospace grid (Telegram has no table markup) ---
+// --- GFM tables (Telegram has no table markup) ---
+//
+// Two renderings, picked by width. Telegram phone clients WRAP long lines
+// inside `pre` blocks instead of scrolling, so a grid wider than a phone's
+// monospace viewport (~40 chars) degenerates into dash soup (live complaint).
+// Narrow tables keep the aligned grid; anything wider becomes stacked cards —
+// one block per data row: the first cell as a bold title, then
+// `Header: cell` lines — which reads naturally at any screen width and lets
+// inline markup inside cells actually render instead of showing literal `**`.
 
 // A separator row: dashes with optional alignment colons, and REQUIRING an
 // interior pipe (≥2 columns) so a lone `---` rule or a prose dash never matches.
@@ -272,13 +281,21 @@ function splitCells(row: string): string[] {
   return cells.map((c) => c.trim());
 }
 
-// Render header + body rows (the separator row is dropped) as a fixed-width
-// grid: cells padded to per-column max width, a dashed rule under the header.
-// The whole block becomes one `pre` entity — Telegram renders it monospace with
-// horizontal scroll, so wide tables stay readable on a phone and every cell is
-// preserved verbatim.
-function renderTable(rows: string[]): string {
-  const grid = rows.map(splitCells);
+// A grid wider than this becomes stacked cards. ~40 monospace chars is what a
+// phone shows per pre line before wrapping; erring low, because a wrapped grid
+// is unreadable while a stacked narrow table is merely less compact.
+const GRID_MAX_WIDTH = 40;
+
+// Inside a `pre` grid, markers are never parsed — `**bold**` shows literal
+// asterisks. Unwrap PAIRED double markers around non-space content; unpaired
+// runs (`**/dist` globs, `2 ** 3` operators) are left untouched.
+const unwrapCell = (s: string): string =>
+  s.replace(/\*\*(\S(?:[^*\n]*\S)?)\*\*/g, "$1").replace(/~~(\S(?:[^~\n]*\S)?)~~/g, "$1");
+
+// Aligned fixed-width grid: cells padded to per-column max width, a dashed rule
+// under the header, the whole block one `pre` entity. Used only when the grid
+// fits a phone viewport (see emitTable).
+function renderGrid(grid: string[][]): string {
   const ncol = Math.max(...grid.map((r) => r.length));
   const width = (s: string): number => [...s].length; // code points, not UTF-16 units
   const widths: number[] = [];
@@ -290,6 +307,63 @@ function renderTable(rows: string[]): string {
     Array.from({ length: ncol }, (_, c) => pad(r[c] ?? "", widths[c]!)).join(" | ");
   const rule = widths.map((w) => "-".repeat(w)).join("-+-");
   return [line(grid[0]!), rule, ...grid.slice(1).map(line)].join("\n");
+}
+
+// Stacked cards: one block per data row, blank line between rows. The first
+// cell renders bold as the row's title (its column header is implied); every
+// other non-empty cell renders as `Header: cell`. Cells go through the inline
+// scanner, so emphasis/code/links inside them format for real — and a stray
+// `*` still can't pair across cells because each cell is scanned separately.
+function emitStackedTable(grid: string[][], out: Out): void {
+  const header = grid[0]!;
+  let firstCard = true;
+  for (const row of grid.slice(1)) {
+    let firstLine = true;
+    const line = (): void => {
+      out.text += firstLine ? (firstCard ? "" : "\n\n") : "\n";
+      firstLine = false;
+    };
+    const boldInline = (src: string): void => {
+      const start = out.text.length;
+      emitInline(src, out);
+      if (out.text.length > start) {
+        out.entities.push({ type: "bold", offset: start, length: out.text.length - start });
+      }
+    };
+    if (row[0]) {
+      line();
+      boldInline(row[0]);
+    }
+    for (let c = 1; c < row.length; c++) {
+      const cell = row[c];
+      if (!cell) continue;
+      line();
+      if (header[c]) {
+        boldInline(header[c]!);
+        out.text += ": ";
+      }
+      emitInline(cell, out);
+    }
+    if (!firstLine) firstCard = false;
+  }
+}
+
+// Route a table to grid or cards and emit it into `out`.
+function emitTable(rows: string[], out: Out): void {
+  const grid = rows.map((r) => splitCells(r).map(unwrapCell));
+  const ncol = Math.max(...grid.map((r) => r.length));
+  let totalWidth = 3 * (ncol - 1);
+  for (let c = 0; c < ncol; c++) {
+    totalWidth += Math.max(1, ...grid.map((r) => [...(r[c] ?? "")].length));
+  }
+  if (grid.length > 1 && totalWidth > GRID_MAX_WIDTH) {
+    // Cards want the ORIGINAL cells (markers get parsed, not stripped).
+    emitStackedTable(rows.map(splitCells), out);
+    return;
+  }
+  const rendered = renderGrid(grid);
+  out.entities.push({ type: "pre", offset: out.text.length, length: rendered.length });
+  out.text += rendered;
 }
 
 // --- Block layer: fences, tables, headings, and inline runs ---
@@ -354,10 +428,8 @@ function emitBlocks(src: string, out: Out): void {
       while (j < lines.length && looksLikeTableRow(lines[j]!) && lines[j]!.trim() !== "") {
         rows.push(lines[j++]!);
       }
-      const grid = renderTable(rows);
       sep();
-      out.entities.push({ type: "pre", offset: out.text.length, length: grid.length });
-      out.text += grid;
+      emitTable(rows, out);
       i = j;
       continue;
     }

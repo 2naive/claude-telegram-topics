@@ -433,3 +433,73 @@ describe("splitTelegram", () => {
     expect(joined).toContain("End.");
   });
 });
+
+describe("wide tables become stacked cards (0.18.0)", () => {
+  const WIDE =
+    "| Вариант | Лечение | Ключевое |\n" +
+    "| --- | --- | --- |\n" +
+    "| **Tinea barbae** | **тербинафин 250 мг/сут 2-6 нед** плюс топический кетоконазол | волос отрастает после лечения |\n" +
+    "| Себорейный дерматит | кетоконазол 2% как маска | волосы не должны выпадать |";
+
+  test("wide table renders as cards, not a pre grid", () => {
+    const r = mdToTelegram(WIDE);
+    expect((r.entities ?? []).some((e) => e.type === "pre")).toBe(false);
+    // first cell is a bold title line; other cells are `Header: cell` lines
+    expect(r.text).toContain("Tinea barbae\nЛечение: ");
+    expect(r.text).toContain("Ключевое: волос отрастает после лечения");
+    // blank line between cards
+    expect(r.text).toContain("\n\nСеборейный дерматит\n");
+    // header row is consumed as labels, not shown as a row
+    expect(r.text.startsWith("Tinea barbae")).toBe(true);
+  });
+
+  test("markers inside wide-table cells format for real, no literal **", () => {
+    const r = mdToTelegram(WIDE);
+    expect(r.text).not.toContain("**");
+    const bolds = (r.entities ?? []).filter((e) => e.type === "bold");
+    // titles (2) + labels (4) + in-cell bold (1); title/label bold may nest
+    expect(bolds.length).toBeGreaterThanOrEqual(7);
+    for (const e of r.entities ?? []) {
+      expect(e.length).toBeGreaterThan(0);
+      expect(e.offset + e.length).toBeLessThanOrEqual(r.text.length);
+    }
+  });
+
+  test("empty cells are skipped, no dangling labels", () => {
+    const r = mdToTelegram(
+      "| Name | Note | Extra |\n| --- | --- | --- |\n| Alpha with a very long tail here | filled | |\n| | second row keyless | note |",
+    );
+    expect(r.text).not.toContain("Extra: \n");
+    expect(r.text).not.toMatch(/Extra: $/);
+    // a row with an empty first cell still emits its labelled cells
+    expect(r.text).toContain("Note: second row keyless");
+  });
+
+  test("a stray * cannot pair across stacked cells", () => {
+    const r = mdToTelegram(
+      "| C1 | C2 |\n| -- | -- |\n| *foo and some very long padding text here | bar tail* |",
+    );
+    expect((r.entities ?? []).some((e) => e.type === "italic")).toBe(false);
+  });
+
+  test("narrow grid unwraps paired ** but keeps globs and operators", () => {
+    const r = mdToTelegram(
+      "| Col | V |\n| --- | - |\n| **bold** | x |\n| **/dist | y |\n| 2 ** 3 | z |",
+    );
+    expect(r.entities).toEqual([{ type: "pre", offset: 0, length: r.text.length }]);
+    expect(r.text).toContain("bold");
+    expect(r.text).not.toContain("**bold**");
+    expect(r.text).toContain("**/dist");
+    expect(r.text).toContain("2 ** 3");
+  });
+
+  test("grid/cards threshold: 40 stays grid, wider stacks", () => {
+    const cell = (n: number): string => "x".repeat(n);
+    // 2 columns + 3-char separator: widths 20+17+3 = 40 -> grid
+    const narrow = mdToTelegram(`| ${cell(20)} | ${cell(17)} |\n| --- | --- |\n| a | b |`);
+    expect((narrow.entities ?? []).some((e) => e.type === "pre")).toBe(true);
+    // widths 20+18+3 = 41 -> cards
+    const wide = mdToTelegram(`| ${cell(20)} | ${cell(18)} |\n| --- | --- |\n| a | b |`);
+    expect((wide.entities ?? []).some((e) => e.type === "pre")).toBe(false);
+  });
+});

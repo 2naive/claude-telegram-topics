@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.18.0 — 2026-08-18
+
+- **Wide tables become stacked cards, not dash soup.** The 0.10.1 grid
+  rendering assumed Telegram scrolls `pre` blocks horizontally — phone clients
+  actually WRAP them, so any table wider than ~40 monospace chars arrived as an
+  unreadable mess of wrapped dashes and padding (live complaint, screenshot
+  from the health topic). Now only grids that fit a phone viewport
+  (≤40 chars) keep the aligned monospace layout; anything wider renders as one
+  block per data row — the first cell as a bold title, the remaining cells as
+  `Header: cell` lines, blank line between rows. Cells go through the inline
+  scanner, so `**bold**`, `` `code` `` and links inside them format for real
+  instead of showing literal markers; a stray `*` still can't pair across
+  cells.
+- **Narrow grids unwrap paired `**…**`/`~~…~~`.** Inside a `pre` block markers
+  are never parsed, so they only added noise and width. Unpaired runs
+  (`**/dist` globs, `2 ** 3` operators) stay verbatim.
+
 ## 0.17.3 — 2026-08-07
 
 - **Autostarted sessions register again** (Windows). A remote-launched console
