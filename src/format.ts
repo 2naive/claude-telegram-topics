@@ -395,6 +395,28 @@ function isBlockStart(lines: string[], i: number): boolean {
   return isFenceOpen(l) || HEADING_RE.test(l) || startsTable(lines, i);
 }
 
+/**
+ * True when the markdown contains a GFM table outside fenced code blocks.
+ * Used to route a message to Telegram's native rich-message tables (Bot API
+ * 10.2) instead of the grid/cards rendering. A table inside a code fence is
+ * someone SHOWING markdown, not a table — it must not trigger the rich path.
+ */
+export function hasGfmTable(input: string): boolean {
+  const lines = input.replace(/\r\n?/g, "\n").split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const fence = /^(`{3,})[^`\n]*$/.exec(lines[i]!);
+    if (fence) {
+      const closeRe = new RegExp("^`{" + fence[1]!.length + ",}\\s*$");
+      let j = i + 1;
+      while (j < lines.length && !closeRe.test(lines[j]!)) j++;
+      i = j;
+      continue;
+    }
+    if (startsTable(lines, i)) return true;
+  }
+  return false;
+}
+
 function emitBlocks(src: string, out: Out): void {
   const lines = src.split("\n");
   let i = 0;

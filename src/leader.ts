@@ -65,7 +65,7 @@ import {
   topicForSentMessage,
   trackSent,
 } from "./sent.ts";
-import { mdToTelegram, splitTelegram } from "./format.ts";
+import { hasGfmTable, mdToTelegram, splitTelegram, TG_MESSAGE_LIMIT } from "./format.ts";
 import { mirrorChunks, type MirrorIO } from "./mirror.ts";
 import { apiRetry } from "./tgretry.ts";
 import {
@@ -1389,6 +1389,11 @@ async function mirrorToTopic(project: string, text: string): Promise<void> {
   lastMirrored.set(project, text);
   stopTyping(topicId); // the reply is arriving — drop the "typing" keepalive
 
+  // Native tables when the answer contains one (see tryRichTable). A rich
+  // failure falls through to the classic chunked pipeline below, which owns
+  // recovery and visible-failure handling.
+  if (await tryRichTable(topicId, text)) return;
+
   const formatted = mdToTelegram(text);
   const chunks = splitTelegram(formatted.text, formatted.entities).filter((c) => c.text.trim());
   if (chunks.length === 0) return;
@@ -1427,10 +1432,48 @@ async function mirrorToTopic(project: string, text: string): Promise<void> {
   await mirrorChunks(chunks, text, MIRROR_MAX_CHUNKS, io);
 }
 
+// A message containing a GFM table is first tried as ONE rich message (Bot API
+// 10.2): Telegram parses GFM server-side and every client renders a real
+// table, instead of our monospace grid / stacked cards. Everything else — and
+// any rich failure (parse reject, undocumented caps, thread gone) — falls back
+// to the classic entity pipeline, so delivery never depends on the newer API.
+// Rich length limits are undocumented; staying within the known message limit.
+async function tryRichTable(
+  topicId: number,
+  md: string,
+  reply_markup?: { inline_keyboard: { text: string; callback_data: string }[][] },
+): Promise<number | undefined> {
+  if (md.length > TG_MESSAGE_LIMIT || !hasGfmTable(md)) return undefined;
+  try {
+    const sent = await bot.api.sendRichMessage(
+      GROUP_CHAT_ID,
+      { markdown: md },
+      { message_thread_id: topicId, ...(reply_markup ? { reply_markup } : {}) },
+    );
+    log("rich.sent", { topic: topicId, chars: md.length });
+    return sent.message_id;
+  } catch (e) {
+    log("rich.fallback", { topic: topicId, error: String(e).slice(0, 200) });
+    return undefined;
+  }
+}
+
 async function sendText(s: Session, text: string, options?: string[]): Promise<number> {
   stopTyping(s.topicId); // the reply is arriving — drop the "typing" keepalive
   const outText =
     sessionPrefix(s.label, topicSessions.get(s.topicId)?.size ?? 1) + text;
+  const richMarkup = options?.length
+    ? { inline_keyboard: options.map((o, j) => [{ text: o, callback_data: String(j) }]) }
+    : undefined;
+  const richId = await tryRichTable(s.topicId, outText, richMarkup);
+  if (richId !== undefined) {
+    trackSent(richId, {
+      topicId: s.topicId,
+      sessionId: s.id,
+      options: options?.length ? options : undefined,
+    });
+    return richId;
+  }
   // Markdown is converted to explicit entities (never parse_mode): intra-word
   // underscores stay literal (`aaa_bbb_ccc` no longer renders "aaabbbccc" with
   // an italic middle) and malformed markup degrades to plain text instead of a

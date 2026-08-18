@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.19.0 — 2026-08-18
+
+- **Native Telegram tables.** A mirrored answer or session message that
+  contains a GFM table is now sent via `sendRichMessage` (Bot API 10.2):
+  Telegram parses the markdown server-side and renders a real table on every
+  client — no more monospace grid or stacked cards for these messages. Applies
+  to the auto-mirror and `send_message` (inline-keyboard options included).
+  Guardrails: only messages within the classic 4096 limit take the rich path
+  (rich length caps are undocumented); a table inside a code fence is someone
+  showing markdown and does not trigger it; ANY rich failure falls back to the
+  classic entity pipeline (`rich.sent` / `rich.fallback` in leader.log), so
+  delivery never depends on the newer API. Grid/cards from 0.18.x remain as
+  the fallback rendering. Verified live: server accepted a GFM table with
+  bold cells and mixed content (message 3602).
+
 ## 0.18.1 — 2026-08-18
 
 - **Grid/cards cutoff tuned — narrow tables stay grids.** 0.18.0's 40-char

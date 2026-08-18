@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mdToTelegram, splitTelegram, MAX_ENTITIES } from "../src/format.ts";
+import { hasGfmTable, mdToTelegram, splitTelegram, MAX_ENTITIES } from "../src/format.ts";
 
 describe("mdToTelegram", () => {
   test("intra-word underscores stay literal (the aaa_bbb_ccc regression)", () => {
@@ -515,5 +515,30 @@ describe("wide tables become stacked cards (0.18.0)", () => {
     // the dashed rule is capped at the header line's width, not the widest cell
     expect(lines[1]!.length).toBeLessThanOrEqual(lines[0]!.length);
     expect(lines[1]!.endsWith("+")).toBe(false);
+  });
+});
+
+describe("hasGfmTable (rich-message routing, 0.19.0)", () => {
+  const TABLE = "| A | B |\n| --- | --- |\n| 1 | 2 |";
+
+  test("detects a GFM table", () => {
+    expect(hasGfmTable("intro\n" + TABLE + "\ntail")).toBe(true);
+  });
+
+  test("a table inside a code fence does not trigger the rich path", () => {
+    expect(hasGfmTable("```md\n" + TABLE + "\n```")).toBe(false);
+  });
+
+  test("pipes without a separator row are not a table", () => {
+    expect(hasGfmTable("a | b\nplain text")).toBe(false);
+    expect(hasGfmTable("no tables at all")).toBe(false);
+  });
+
+  test("an unclosed fence swallows the rest (graceful, like the renderer)", () => {
+    expect(hasGfmTable("```\n| A | B |\n| --- | --- |")).toBe(false);
+  });
+
+  test("a table after a closed fence is still detected", () => {
+    expect(hasGfmTable("```\ncode\n```\n" + TABLE)).toBe(true);
   });
 });
