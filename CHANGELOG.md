@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.18.1 — 2026-08-18
+
+- **Grid/cards cutoff tuned — narrow tables stay grids.** 0.18.0's 40-char
+  threshold flipped a 41-wide daily-stats table (one long cell) into cards even
+  though the grid fit the phone fine (live complaint, before/after
+  screenshots). The cutoff is now 48 — a line a few chars past the ~36-40-char
+  phone viewport wraps only itself, which stays legible; cards remain for
+  genuinely wide tables where most rows would wrap repeatedly. The grid also
+  stopped inflating itself: the last column is no longer padded and the dashed
+  rule is capped at the header line's width, so one long cell widens its own
+  row instead of every line.
+
 ## 0.18.0 — 2026-08-18
 
 - **Wide tables become stacked cards, not dash soup.** The 0.10.1 grid

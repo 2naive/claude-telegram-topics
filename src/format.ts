@@ -281,10 +281,12 @@ function splitCells(row: string): string[] {
   return cells.map((c) => c.trim());
 }
 
-// A grid wider than this becomes stacked cards. ~40 monospace chars is what a
-// phone shows per pre line before wrapping; erring low, because a wrapped grid
-// is unreadable while a stacked narrow table is merely less compact.
-const GRID_MAX_WIDTH = 40;
+// A grid wider than this becomes stacked cards. A phone shows ~36-40 monospace
+// chars per pre line; a line a few chars past that wraps only itself, which
+// stays legible, so the cutoff carries slack past the viewport. Cards are for
+// genuinely wide tables where most rows would wrap repeatedly (live complaint:
+// 40 flipped a 41-wide daily-stats grid — one long cell — into cards).
+const GRID_MAX_WIDTH = 48;
 
 // Inside a `pre` grid, markers are never parsed — `**bold**` shows literal
 // asterisks. Unwrap PAIRED double markers around non-space content; unpaired
@@ -294,7 +296,10 @@ const unwrapCell = (s: string): string =>
 
 // Aligned fixed-width grid: cells padded to per-column max width, a dashed rule
 // under the header, the whole block one `pre` entity. Used only when the grid
-// fits a phone viewport (see emitTable).
+// fits a phone viewport (see emitTable). The LAST column is not padded and the
+// rule is capped at the header line's length: trailing spaces and a full-width
+// rule would make every line as wide as the single widest cell, so one long
+// cell would wrap all rows instead of just its own.
 function renderGrid(grid: string[][]): string {
   const ncol = Math.max(...grid.map((r) => r.length));
   const width = (s: string): number => [...s].length; // code points, not UTF-16 units
@@ -304,9 +309,16 @@ function renderGrid(grid: string[][]): string {
   }
   const pad = (s: string, w: number): string => s + " ".repeat(Math.max(0, w - width(s)));
   const line = (r: string[]): string =>
-    Array.from({ length: ncol }, (_, c) => pad(r[c] ?? "", widths[c]!)).join(" | ");
-  const rule = widths.map((w) => "-".repeat(w)).join("-+-");
-  return [line(grid[0]!), rule, ...grid.slice(1).map(line)].join("\n");
+    Array.from({ length: ncol }, (_, c) =>
+      c === ncol - 1 ? (r[c] ?? "") : pad(r[c] ?? "", widths[c]!),
+    ).join(" | ");
+  const header = line(grid[0]!);
+  const rule = widths
+    .map((w) => "-".repeat(w))
+    .join("-+-")
+    .slice(0, [...header].length) // header's visual width (code points)
+    .replace(/\+$/, "-");
+  return [header, rule, ...grid.slice(1).map(line)].join("\n");
 }
 
 // Stacked cards: one block per data row, blank line between rows. The first

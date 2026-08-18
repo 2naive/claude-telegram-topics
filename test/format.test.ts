@@ -493,13 +493,27 @@ describe("wide tables become stacked cards (0.18.0)", () => {
     expect(r.text).toContain("2 ** 3");
   });
 
-  test("grid/cards threshold: 40 stays grid, wider stacks", () => {
+  test("grid/cards threshold: 48 stays grid, wider stacks", () => {
     const cell = (n: number): string => "x".repeat(n);
-    // 2 columns + 3-char separator: widths 20+17+3 = 40 -> grid
-    const narrow = mdToTelegram(`| ${cell(20)} | ${cell(17)} |\n| --- | --- |\n| a | b |`);
+    // 2 columns + 3-char separator: widths 25+20+3 = 48 -> grid
+    const narrow = mdToTelegram(`| ${cell(25)} | ${cell(20)} |\n| --- | --- |\n| a | b |`);
     expect((narrow.entities ?? []).some((e) => e.type === "pre")).toBe(true);
-    // widths 20+18+3 = 41 -> cards
-    const wide = mdToTelegram(`| ${cell(20)} | ${cell(18)} |\n| --- | --- |\n| a | b |`);
+    // widths 25+21+3 = 49 -> cards
+    const wide = mdToTelegram(`| ${cell(25)} | ${cell(21)} |\n| --- | --- |\n| a | b |`);
     expect((wide.entities ?? []).some((e) => e.type === "pre")).toBe(false);
+  });
+
+  test("one long cell widens only its own row: no trailing pad, rule capped", () => {
+    const r = mdToTelegram(
+      "| Дата | CPC |\n| --- | --- |\n| 17.08 | 972₽ |\n| 18.08 | 307₽ (день идёт) |",
+    );
+    expect((r.entities ?? []).some((e) => e.type === "pre")).toBe(true);
+    const lines = r.text.split("\n");
+    // last column unpadded: short rows stay short, no trailing spaces
+    expect(lines.every((l) => !l.endsWith(" "))).toBe(true);
+    expect(lines[2]).toBe("17.08 | 972₽");
+    // the dashed rule is capped at the header line's width, not the widest cell
+    expect(lines[1]!.length).toBeLessThanOrEqual(lines[0]!.length);
+    expect(lines[1]!.endsWith("+")).toBe(false);
   });
 });
