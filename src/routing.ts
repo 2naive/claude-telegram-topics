@@ -220,3 +220,23 @@ export function topicLink(groupChatId: string, topicId: number): string | null {
   const m = /^-100(\d+)$/.exec(groupChatId.trim());
   return m ? `https://t.me/c/${m[1]}/${topicId}` : null;
 }
+
+/**
+ * Decide what happens to a dead/departing session's undelivered messages.
+ * Fan-out copies already sit in the siblings' queues, but a SOLO message
+ * (drained from the held inbox, rescued earlier, or moved on re-register) was
+ * delivered to that one session only — with live siblings it must be rerouted
+ * to one of them, and with none everything is re-held for the next session.
+ * Dropping solo messages on the "siblings have copies" assumption loses user
+ * input the Bot API cannot recover (live incident: two held messages drained
+ * into a session that died before its first poll were discarded because a
+ * sibling registered 0.4 s after the drain).
+ */
+export function planRescue<M>(
+  orphans: M[],
+  hasSiblings: boolean,
+  isSolo: (m: M) => boolean,
+): { hold: M[]; reroute: M[] } {
+  if (!hasSiblings) return { hold: orphans, reroute: [] };
+  return { hold: [], reroute: orphans.filter(isSolo) };
+}

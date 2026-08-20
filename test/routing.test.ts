@@ -1,6 +1,7 @@
 import { test, expect, describe } from "bun:test";
 import {
   isNewerVersion,
+  planRescue,
   parseCallback,
   permCallbackData,
   pickSessionField,
@@ -298,5 +299,38 @@ describe("topicLink (the /list deep links)", () => {
     expect(topicLink("123456", 5)).toBeNull();
     expect(topicLink("", 5)).toBeNull();
     expect(topicLink("-100abc", 5)).toBeNull();
+  });
+});
+
+describe("planRescue (dead session's undelivered messages, 0.20.0)", () => {
+  type M = { messageId: number; solo: boolean };
+  const m = (messageId: number, solo: boolean): M => ({ messageId, solo });
+  const isSolo = (x: M): boolean => x.solo;
+
+  test("live incident: drained (solo) messages with a late-registered sibling reroute, not drop", () => {
+    const drained = [m(3854, true), m(3863, true)];
+    const plan = planRescue(drained, true, isSolo);
+    expect(plan.reroute).toEqual(drained);
+    expect(plan.hold).toEqual([]);
+  });
+
+  test("fanned messages with live siblings are dropped (siblings own copies)", () => {
+    const plan = planRescue([m(1, false), m(2, false)], true, isSolo);
+    expect(plan.reroute).toEqual([]);
+    expect(plan.hold).toEqual([]);
+  });
+
+  test("mixed queue with siblings reroutes only the solo part", () => {
+    const solo = m(10, true);
+    const plan = planRescue([m(9, false), solo], true, isSolo);
+    expect(plan.reroute).toEqual([solo]);
+    expect(plan.hold).toEqual([]);
+  });
+
+  test("no siblings: everything is re-held regardless of provenance", () => {
+    const orphans = [m(1, false), m(2, true)];
+    const plan = planRescue(orphans, false, isSolo);
+    expect(plan.hold).toEqual(orphans);
+    expect(plan.reroute).toEqual([]);
   });
 });

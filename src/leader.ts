@@ -43,6 +43,7 @@ import {
   isNewerVersion,
   topicLink,
   parseCallback,
+  planRescue,
   permCallbackData,
   sessionPrefix,
   startCallbackData,
@@ -92,6 +93,13 @@ type Session = {
   topicId: number;
   label: string;
   queue: Inbound[];
+  /** messageIds delivered to THIS session alone (drained from heldInbox,
+   * rescued from a dead sibling, or moved on re-register) — siblings have NO
+   * copies of these, unlike fan-out deliveries. The reaper must not drop them
+   * on the "siblings have their own copies" assumption (live incident: two
+   * drained messages died with a never-polling session and were discarded
+   * because a sibling registered 0.4 s after the drain). */
+  soloMids: Set<number>;
   waiter: ((v: void) => void) | null;
   waiterTimer: ReturnType<typeof setTimeout> | null;
   lastActive: number;
@@ -183,6 +191,36 @@ function holdInbound(project: string, msg: Inbound): void {
   if (held.msgs.length > HELD_MAX) held.msgs.splice(0, held.msgs.length - HELD_MAX);
 }
 
+/**
+ * Route a dead/departing session's undelivered messages. Fan-out copies
+ * already sit in the siblings' queues, but a message this session ALONE held
+ * (see Session.soloMids) exists nowhere else — hand those to a live sibling,
+ * or re-hold everything for the next session when there is none. Dropping
+ * them silently loses user input the Bot API cannot recover.
+ */
+function rescueOrphans(
+  project: string,
+  topicId: number,
+  orphans: Inbound[],
+  isSolo: (m: Inbound) => boolean,
+): void {
+  if (orphans.length === 0) return;
+  const siblings = [...(topicSessions.get(topicId) ?? [])].filter((sid) => sessions.has(sid));
+  const plan = planRescue(orphans, siblings.length > 0, isSolo);
+  if (plan.hold.length > 0) {
+    for (const m of plan.hold) holdInbound(project, m);
+    void postNoSessionNotice(topicId, project);
+  }
+  if (plan.reroute.length > 0) {
+    const target = sessions.get(siblings[0]!)!;
+    for (const m of plan.reroute) {
+      target.soloMids.add(m.messageId);
+      deliverToSession(target.id, m);
+    }
+    log("deliver.rescued", { project, sid: target.id, count: plan.reroute.length });
+  }
+}
+
 // Fresh leadership starts with an EMPTY session registry: existing sessions
 // re-register within one poll cycle (≤ ~30 s), but a message arriving before
 // that made autostart spawn a console for a project whose session was alive
@@ -249,6 +287,9 @@ const lastActivityAt = new Map<string, number>(); // project -> last /activity t
 type PendingConfirm = {
   sid: string;
   msgs: Inbound[];
+  /** messageIds that were solo in the session at arm time (see
+   * Session.soloMids) — the session may be gone when the timer fires. */
+  solo: Set<number>;
   redeliveries: number;
   timer: ReturnType<typeof setTimeout>;
 };
@@ -279,14 +320,18 @@ function armPendingConfirm(s: Session, msgs: Inbound[]): void {
     Date.now() - last < 120_000 &&
     topicStatusOf(project) === "working";
   if (midTurn) return;
+  const soloOf = (list: Inbound[]): number[] =>
+    list.filter((m) => s.soloMids.has(m.messageId)).map((m) => m.messageId);
   const existing = pendingConfirm.get(project);
   if (existing) {
     existing.msgs.push(...msgs);
+    for (const mid of soloOf(msgs)) existing.solo.add(mid);
     return;
   }
   pendingConfirm.set(project, {
     sid: s.id,
     msgs: [...msgs],
+    solo: new Set(soloOf(msgs)),
     redeliveries: 0,
     timer: setTimeout(() => confirmTimeout(project), CONFIRM_TIMEOUT_MS),
   });
@@ -297,13 +342,14 @@ function confirmTimeout(project: string): void {
   if (!p) return;
   const s = sessions.get(p.sid);
   if (!s) {
-    // The holder died with the messages — same recovery as the reaper: re-hold
-    // and kick the no-session flow, unless a live sibling has its own copies.
+    // The holder died with the messages — same recovery as the reaper: solo
+    // messages go to a live sibling, everything is re-held when there is none.
+    // (The reaper folds a reaped session's pendingConfirm into its own rescue,
+    // so this fires only for holders gone by other paths, e.g. /unregister.)
     pendingConfirm.delete(project);
     const tid = projectTopicId(project);
-    if (tid !== undefined && (topicSessions.get(tid)?.size ?? 0) === 0) {
-      for (const m of p.msgs) holdInbound(project, m);
-      void postNoSessionNotice(tid, project);
+    if (tid !== undefined) {
+      rescueOrphans(project, tid, p.msgs, (m) => p.solo.has(m.messageId));
     }
     return;
   }
@@ -1637,6 +1683,7 @@ async function handle(req: Request): Promise<Response> {
       // outbound messages when the topic has more than one session.
       label: (label ?? "").trim() || id.slice(0, 4),
       queue: [],
+      soloMids: new Set<number>(),
       waiter: null,
       waiterTimer: null,
       lastActive: Date.now(),
@@ -1653,6 +1700,10 @@ async function handle(req: Request): Promise<Response> {
       const old = sessions.get(prev);
       if (old) {
         fresh.queue.push(...old.queue);
+        // Moved messages keep their solo status — siblings still lack copies.
+        for (const m of old.queue) {
+          if (old.soloMids.has(m.messageId)) fresh.soloMids.add(m.messageId);
+        }
         unbindTopic(prev, old.topicId);
         sessions.delete(prev);
       }
@@ -1677,6 +1728,8 @@ async function handle(req: Request): Promise<Response> {
     if (held) {
       heldInbox.delete(project);
       fresh.queue.push(...held.msgs);
+      // Drained messages go to THIS session only — no fan-out copies exist.
+      for (const m of held.msgs) fresh.soloMids.add(m.messageId);
       log("held.drained", { sid: id, project, count: held.msgs.length });
       // The new session is about to process the drained queue — show ⏳ (the
       // Stop hook / TTL returns it to 🟢). Covers the case where the activity
@@ -1857,9 +1910,15 @@ async function handle(req: Request): Promise<Response> {
     }
     if (path === "/unregister") {
       const proj = s.project;
-      unbindTopic(s.id, s.topicId);
+      const topicId = s.topicId;
+      // A graceful shutdown can still leave undrained messages (arrived after
+      // the session's last poll) — rescue them exactly like the reaper does
+      // instead of deleting them with the session.
+      const orphans = s.queue.splice(0, s.queue.length);
+      unbindTopic(s.id, topicId);
       sessions.delete(s.id);
-      log("unregister", { sid: s.id });
+      log("unregister", { sid: s.id, queued: orphans.length });
+      rescueOrphans(proj, topicId, orphans, (m) => s.soloMids.has(m.messageId));
       refreshTopicStatus(proj); // 💤 no session (or 📥 if messages are queued)
       return json({ ok: true });
     }
@@ -2023,19 +2082,23 @@ export async function tryBecomeLeader(): Promise<boolean> {
         const proj = s.project;
         const topicId = s.topicId;
         const orphans = s.queue.splice(0, s.queue.length);
+        // Messages the corpse polled out but never confirmed by a turn belong
+        // to it too — fold them in (deduped) so confirmTimeout doesn't later
+        // find a dead sid and rescue a second copy.
+        const pc = pendingConfirm.get(proj);
+        if (pc && pc.sid === id) {
+          const have = new Set(orphans.map((m) => m.messageId));
+          for (const m of pc.msgs) if (!have.has(m.messageId)) orphans.push(m);
+          clearPendingConfirm(proj);
+        }
         unbindTopic(id, topicId);
         sessions.delete(id);
         log("session.reaped", { sid: id, queued: orphans.length });
-        // A corpse must not eat its undelivered queue: if no other live
-        // session serves this topic, re-hold the messages and kick the normal
-        // no-session recovery (notice / autostart) so they reach the
-        // relaunched session instead of vanishing. With live siblings the
-        // fan-out already gave them their own copies — re-holding would
-        // double-deliver.
-        if (orphans.length > 0 && (topicSessions.get(topicId)?.size ?? 0) === 0) {
-          for (const m of orphans) holdInbound(proj, m);
-          void postNoSessionNotice(topicId, proj);
-        }
+        // A corpse must not eat its undelivered messages: solo ones (drained /
+        // rescued / moved — no fan-out copies anywhere) go to a live sibling;
+        // with no sibling everything is re-held and the normal no-session
+        // recovery (notice / autostart) kicks in.
+        rescueOrphans(proj, topicId, orphans, (m) => s.soloMids.has(m.messageId));
         refreshTopicStatus(proj);
       }
     }

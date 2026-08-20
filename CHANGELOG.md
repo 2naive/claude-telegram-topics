@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.20.0 — 2026-08-20
+
+- **A dead session can no longer eat messages it alone held.** Live incident:
+  two messages queued for a topic with no session were drained into the first
+  registering session; a sibling registered 0.4 s later; the first session died
+  before its first poll, and the reaper dropped both messages on the
+  "siblings have their own fan-out copies" assumption — but drained messages
+  go to ONE session only, the sibling never had them. Sessions now track which
+  messages are theirs alone (`soloMids`: drained from the held inbox, rescued,
+  or moved on re-register), and every path that discards a session — the
+  reaper, delivery-confirmation timeout, `/unregister` — routes those to a live
+  sibling (`deliver.rescued` in leader.log) or re-holds them for the next
+  session. The decision is a pure helper (`planRescue`) with the incident as a
+  regression test.
+- **`/unregister` no longer discards the queue at all** — a graceful shutdown
+  with undrained messages (arrived after the session's last poll) rescues them
+  the same way instead of deleting them with the session.
+- **The reaper folds a reaped session's unconfirmed deliveries into its
+  rescue** (deduped by message id), so the confirmation timer can't later
+  rescue a second copy.
+
 ## 0.19.0 — 2026-08-18
 
 - **Native Telegram tables.** A mirrored answer or session message that
