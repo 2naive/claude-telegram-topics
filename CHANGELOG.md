@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.20.1 — 2026-08-23
+
+- **The inbound loop is supervised.** Live incident: after days of uptime a
+  session's poll loop stopped silently — the leader reaped it and the topic
+  went 💤 while the console, hooks and mirror all stayed alive, so the session
+  answered in the console but was deaf to Telegram. The loop now stamps a
+  heartbeat every iteration and the watchdog restarts it when the heartbeat is
+  stale for 2 minutes (a healthy loop beats at least every ~36 s); a generation
+  counter orphans a wedged instance so a late-settling await can't produce two
+  loops. The session re-registers on restart and the topic wakes up on its own.
+- **Client events get a persistent sink** (`client.log` in the channel state
+  dir, next to leader.log): the incident was undiagnosable because the MCP
+  server's stderr is not persisted anywhere — Claude Code's per-session debug
+  log records tool calls, not plugin stderr. Loop stalls and crashes now leave
+  a trace (`inbound.stalled` / `inbound.stopped`).
+
 ## 0.20.0 — 2026-08-20
 
 - **A dead session can no longer eat messages it alone held.** Live incident:

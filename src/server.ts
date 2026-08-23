@@ -26,6 +26,7 @@ import { assertConfigured, VERSION } from "./config.ts";
 import { assertSendable } from "./access.ts";
 import { stopLeader } from "./leader.ts";
 import { waitForClientReady } from "./ready.ts";
+import { clientLog } from "./clientlog.ts";
 import * as channel from "./client.ts";
 import type { Inbound } from "./leader.ts";
 
@@ -164,8 +165,21 @@ const clientInitializedPromise = new Promise<void>((resolve) => {
 mcp.oninitialized = () => clientInitialized();
 
 let inboundRunning = false;
+// Loop supervision (live incident: the loop stopped silently after days —
+// polls ceased, the leader reaped the session and the topic went 💤 while the
+// console, hooks and mirror stayed alive; stderr is not persisted anywhere, so
+// the death left no trace). The loop stamps a heartbeat every iteration; the
+// watchdog restarts it when the heartbeat goes stale. The generation counter
+// orphans a stuck instance: if its pending await ever settles, the guard in
+// the while condition exits it instead of running two loops.
+let inboundGen = 0;
+let inboundBeat = Date.now();
+const INBOUND_STALL_MS = 120_000;
+
 async function runInboundLoop(): Promise<void> {
   inboundRunning = true;
+  const gen = ++inboundGen;
+  inboundBeat = Date.now();
   // Registration failures (bot not admin yet, group not a forum, leader
   // mid-election) MUST NOT kill the loop: it used to await ensureRegistered
   // once, unguarded — one setup hiccup and inbound was dead for the whole
@@ -176,7 +190,8 @@ async function runInboundLoop(): Promise<void> {
   // registering early lets the leader drain its held queue into our session
   // queue (where messages wait safely) and stops the no-session notices.
   let pushGateOpen = false;
-  while (inboundRunning) {
+  while (inboundRunning && gen === inboundGen) {
+    inboundBeat = Date.now();
     try {
       await channel.ensureRegistered();
       backoff = 1000;
@@ -373,6 +388,20 @@ function startWatchdog(): void {
         shutdown("client stopped answering ping");
       }
     }
+    // Inbound-loop supervision: a healthy loop beats at least every ~36 s
+    // (25 s long-poll + timeout headroom). A stale heartbeat means the loop
+    // died or wedged — start a fresh generation; the guard orphans the old one.
+    if (inboundRunning && Date.now() - inboundBeat > INBOUND_STALL_MS) {
+      const silentSec = Math.round((Date.now() - inboundBeat) / 1000);
+      clientLog("inbound.stalled", { silentSec, gen: inboundGen });
+      process.stderr.write(
+        `telegram-topics: inbound loop stalled ${silentSec}s — restarting\n`,
+      );
+      void runInboundLoop().catch((e) => {
+        clientLog("inbound.stopped", { error: String(e) });
+        process.stderr.write(`telegram-topics: inbound loop stopped: ${e}\n`);
+      });
+    }
   }, 30_000);
   (t as { unref?: () => void }).unref?.();
 }
@@ -409,10 +438,13 @@ async function main() {
 
   startWatchdog();
 
-  // Stream inbound from the moment the channel is up.
-  void runInboundLoop().catch((e) =>
-    process.stderr.write(`telegram-topics: inbound loop stopped: ${e}\n`),
-  );
+  // Stream inbound from the moment the channel is up. A crash is recorded in
+  // the client log AND leaves inboundBeat stale, so the watchdog restarts the
+  // loop within INBOUND_STALL_MS instead of the session going silently deaf.
+  void runInboundLoop().catch((e) => {
+    clientLog("inbound.stopped", { error: String(e) });
+    process.stderr.write(`telegram-topics: inbound loop stopped: ${e}\n`);
+  });
 }
 
 main().catch((e) => {
