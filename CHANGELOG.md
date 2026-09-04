@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.20.2 — 2026-09-04
+
+- **Identity resolution no longer times out on deep launch chains.** Live
+  incident (CC 2.1.260): an autostarted session never registered — its inbound
+  went dead (badge 💤, two queued messages expired), while its answers still
+  mirrored out (the mirror path resolves the project by cwd independently). Root
+  cause: the Windows ancestor walk ran a separate `Get-CimInstance -Filter
+  ProcessId=$id` per level (~2.8 s each), so the 5-level autostart chain took
+  ~14 s and blew past the walk's 7 s timeout; the query then fell back to the
+  MCP server's parent pid alone (a `cmd` wrapper with no session record), so
+  identity resolved to the config dir and the client deferred registration —
+  and because the query fired only once, forever. Fixes:
+  - The walk takes ONE snapshot of the process table and traverses it in memory
+    — depth-independent, ~2.8 s for any chain (measured).
+  - The timeout is raised 7 s → 12 s for headroom under mass-autostart load.
+  - A degenerate result (only the ppid, no ancestors) or a failed snapshot now
+    RETRIES (≤10 × 4 s) instead of latching, so one slow snapshot can't strand a
+    session's inbound permanently.
+
 ## 0.20.1 — 2026-08-23
 
 - **The inbound loop is supervised.** Live incident: after days of uptime a
