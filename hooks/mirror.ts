@@ -25,7 +25,7 @@ async function readStdin(): Promise<string> {
 
 async function main(): Promise<void> {
   const raw = await readStdin().catch(() => "");
-  let input: { transcript_path?: string; cwd?: string } = {};
+  let input: { transcript_path?: string; cwd?: string; session_id?: string } = {};
   try {
     input = JSON.parse(raw);
   } catch {
@@ -49,12 +49,15 @@ async function main(): Promise<void> {
   // in the right topic even from a subdirectory cwd.
   const cwd = process.env.CLAUDE_PROJECT_DIR?.trim() || input.cwd?.trim() || process.cwd();
   const project = keyFromCwd(cwd);
+  // Forward the Claude conversation id so the leader can attribute this answer to
+  // the sending session (reply routing) when several consoles share a topic.
+  const claudeSessionId = input.session_id?.trim() || undefined;
   const port = resolvePort();
   try {
     await fetch(`http://127.0.0.1:${port}/mirror`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ project, text }),
+      body: JSON.stringify({ project, text, claudeSessionId }),
       signal: AbortSignal.timeout(2000),
     });
   } catch {

@@ -2,6 +2,7 @@ import { test, expect, describe } from "bun:test";
 import {
   isNewerVersion,
   planRescue,
+  pickMirrorOwner,
   parseCallback,
   permCallbackData,
   pickSessionField,
@@ -332,5 +333,36 @@ describe("planRescue (dead session's undelivered messages, 0.20.0)", () => {
     const plan = planRescue(orphans, false, isSolo);
     expect(plan.hold).toEqual(orphans);
     expect(plan.reroute).toEqual([]);
+  });
+});
+
+describe("pickMirrorOwner (reply attribution for auto-mirror, 0.20.3)", () => {
+  const m = (sid: string, cid?: string) => ({ sid, claudeSessionId: cid });
+
+  test("matches the session by Claude conversation id among several", () => {
+    const members = [m("s1", "conv-A"), m("s2", "conv-B"), m("s3", "conv-C")];
+    expect(pickMirrorOwner(members, "conv-B")).toBe("s2");
+  });
+
+  test("a lone session owns its mirror even without an id match", () => {
+    expect(pickMirrorOwner([m("only", "conv-X")], "conv-Y")).toBe("only");
+    expect(pickMirrorOwner([m("only")], undefined)).toBe("only");
+  });
+
+  test("two-plus sessions with no id match stay unattributed (reply fans out)", () => {
+    const members = [m("s1", "conv-A"), m("s2", "conv-B")];
+    expect(pickMirrorOwner(members, undefined)).toBeUndefined();
+    expect(pickMirrorOwner(members, "conv-Z")).toBeUndefined();
+  });
+
+  test("no sessions -> undefined", () => {
+    expect(pickMirrorOwner([], "conv-A")).toBeUndefined();
+  });
+
+  test("the live incident: reply to console A's answer routes to A, not both", () => {
+    // Two consoles resuming different conversations on one topic.
+    const members = [m("consoleA", "conv-A"), m("consoleB", "conv-B")];
+    expect(pickMirrorOwner(members, "conv-A")).toBe("consoleA");
+    expect(pickMirrorOwner(members, "conv-B")).toBe("consoleB");
   });
 });

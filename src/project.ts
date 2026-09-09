@@ -178,6 +178,53 @@ export function claudePid(): number | null {
 }
 
 /**
+ * Live console pids whose session cwd resolves to `project`, from the Claude
+ * Code session records — INCLUDING consoles that never or no longer registered
+ * with the bridge (deaf-but-alive). Autostart consults this before spawning: a
+ * console that is alive but silent must not get a duplicate stacked on top of
+ * it. That stacking is the zombie-accumulation bug — every time a topic showed
+ * 💤 (a console gone deaf, not dead), autostart launched a fresh `--continue`
+ * console resuming the same conversation while the old process lingered, and
+ * once the old one recovered BOTH answered every message.
+ *
+ * Liveness is `process.kill(pid, 0)` (ESRCH = gone; EPERM = exists but not
+ * signalable = alive). Records are matched by normalized cwd, not git root, to
+ * avoid a git spawn per record in the leader's hot path; sessions launch at the
+ * project root, so the cwd is the key. A stale record whose pid was reused by an
+ * unrelated process is a rare false-positive whose only cost is a deferred
+ * autostart (the message stays queued) — far cheaper than stacking zombies.
+ */
+export function aliveConsolePidsFor(project: string): number[] {
+  const out: number[] = [];
+  for (const r of readSessionRecords()) {
+    if (typeof r.pid !== "number" || r.pid <= 1) continue;
+    if (typeof r.cwd !== "string" || !r.cwd.trim()) continue;
+    if (normalizePath(r.cwd) !== project) continue;
+    try {
+      process.kill(r.pid, 0);
+      out.push(r.pid);
+    } catch (e) {
+      if ((e as { code?: string }).code === "EPERM") out.push(r.pid);
+    }
+  }
+  return out;
+}
+
+/**
+ * This session's Claude Code conversation id (the sessions/<pid>.json
+ * `sessionId`), reported to the leader at registration. The leader uses it to
+ * attribute an auto-mirrored answer to THIS session (so a reply to that answer
+ * routes back here, not fanned to every console on the project) and to detect a
+ * second console resuming the SAME conversation. Empty when identity is still
+ * warming — the caller reports it opportunistically and re-reports on re-register.
+ */
+export function claudeSessionId(): string {
+  const fromPid = pidRecord()?.sessionId;
+  if (typeof fromPid === "string" && fromPid.trim()) return fromPid.trim();
+  return process.env.CLAUDE_CODE_SESSION_ID?.trim() || "";
+}
+
+/**
  * Bounded startup wait: give the session record a chance to appear before the
  * first registration, so a fresh (or reloaded) server doesn't register a
  * provisional identity it would immediately have to heal.

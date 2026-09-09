@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.20.3 — 2026-09-09
+
+- **A reply to an auto-mirrored answer routes back to the session that wrote it**
+  — no longer fanned out to every console on the topic. Reply-routing already
+  worked for `send_message`-tool messages (owner-tracked), but auto-mirror
+  answers went through the project-keyed `/mirror` path and were never
+  attributed, so a reply to one had no owner and fanned out (live incident: two
+  consoles on one project both answered every reply). The Stop hook now forwards
+  the Claude conversation id, the client reports it at register, and the leader
+  tracks each mirrored message to its session — a match by conversation id, or a
+  lone session on the topic. Two-plus unmatched sessions stay unattributed (the
+  reply fans out, exactly the prior behaviour), so nothing regresses.
+- **Autostart no longer stacks a console on a living-but-silent one.** Before
+  spawning a `--continue` console for a 💤 topic, the leader checks the Claude
+  Code session records for a console that is still ALIVE for this project
+  (registered OR deaf) and skips the spawn if one exists. This was the
+  zombie-accumulation bug: each time a console went deaf (not dead) autostart
+  launched another resuming the same conversation, and once the old one
+  recovered BOTH answered. A deaf console is expected to self-heal now (0.20.1
+  loop watchdog + 0.20.2 identity); a genuinely wedged one blocks autostart and
+  is cleared with `/stop` or a manual kill.
+
 ## 0.20.2 — 2026-09-04
 
 - **Identity resolution no longer times out on deep launch chains.** Live

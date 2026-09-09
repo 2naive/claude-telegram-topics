@@ -144,6 +144,8 @@ export type SessionRecord = {
   name?: string;
   cwd?: string;
   updatedAt?: number;
+  pid?: number;
+  startedAt?: number;
 };
 
 /**
@@ -239,4 +241,23 @@ export function planRescue<M>(
 ): { hold: M[]; reroute: M[] } {
   if (!hasSiblings) return { hold: orphans, reroute: [] };
   return { hold: [], reroute: orphans.filter(isSolo) };
+}
+
+/**
+ * Which session owns a mirrored answer, so a reply to it routes back to that
+ * session instead of fanning out to every console on the topic. Prefer the
+ * member whose Claude conversation id matches the mirror's; else a lone member
+ * owns its mirror unambiguously; two-plus members with no id match yield
+ * undefined — the reply fans out, exactly the pre-0.20.3 behaviour. Pure.
+ */
+export function pickMirrorOwner(
+  members: { sid: string; claudeSessionId?: string }[],
+  claudeSessionId?: string,
+): string | undefined {
+  if (members.length === 0) return undefined;
+  if (claudeSessionId) {
+    const m = members.find((x) => x.claudeSessionId === claudeSessionId);
+    if (m) return m.sid;
+  }
+  return members.length === 1 ? members[0]!.sid : undefined;
 }

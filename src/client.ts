@@ -9,6 +9,7 @@
 import { CONTROL_PORT, VERSION, isRealProjectKey } from "./config.ts";
 import {
   claudePid,
+  claudeSessionId,
   identityResolved,
   projectKey,
   projectName,
@@ -129,6 +130,10 @@ async function register(honorHandoff = true): Promise<void> {
       // Telegram by killing the process tree. null when unresolvable (the
       // leader then reports the session as not remotely stoppable).
       pid: claudePid() ?? undefined,
+      // The Claude Code conversation id — lets the leader attribute a mirrored
+      // answer to this session (reply routing) and spot a second console
+      // resuming the same conversation. Empty while identity is warming.
+      claudeSessionId: claudeSessionId() || undefined,
     }),
     signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
   });

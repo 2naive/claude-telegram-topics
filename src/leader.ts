@@ -44,6 +44,7 @@ import {
   topicLink,
   parseCallback,
   planRescue,
+  pickMirrorOwner,
   permCallbackData,
   sessionPrefix,
   startCallbackData,
@@ -79,6 +80,7 @@ import {
   discoverLaunchable,
 } from "./spawn.ts";
 import { existsSync } from "node:fs";
+import { aliveConsolePidsFor } from "./project.ts";
 import { log } from "./log.ts";
 
 export type Inbound =
@@ -109,6 +111,10 @@ type Session = {
   /** The session's claude process pid (reported at register) — lets /stop and
    * /new end the session remotely. Absent on pre-0.17.0 clients. */
   pid?: number;
+  /** The session's Claude Code conversation id (reported at register). Lets the
+   * leader attribute an auto-mirrored answer to this session so a reply to it
+   * routes back here instead of fanning out. Absent on pre-0.20.3 clients. */
+  claudeSessionId?: string;
 };
 
 const INBOX_DIR = join(STATE_DIR, "inbox");
@@ -231,6 +237,24 @@ function rescueOrphans(
 const AUTOSTART_GRACE_MS = 45_000;
 const deferredAutostarts = new Set<ReturnType<typeof setTimeout>>();
 
+// Spawn a console for `project` UNLESS one is already alive per the Claude Code
+// session records — registered OR deaf-but-alive. Stacking a fresh --continue
+// console on a living-but-silent one is exactly how duplicate consoles on a
+// single conversation accumulated (each 💤 spawned another; the old process
+// lingered; once it recovered, BOTH answered every message). A deaf console is
+// expected to self-heal now (0.20.1 loop watchdog + 0.20.2 identity), so
+// skipping is correct; if it truly never recovers the held message expires and
+// the user relaunches. Returns "skipped" when a live console exists, else the
+// spawnSession result (an error string or null on success).
+function autostartSpawn(project: string): "skipped" | string | null {
+  const alive = aliveConsolePidsFor(project);
+  if (alive.length > 0) {
+    log("session.autostart.skip", { project, alivePids: alive.join(",") });
+    return "skipped";
+  }
+  return spawnSession(project, topicName(project), true);
+}
+
 async function postNoSessionNotice(topicId: number, project: string): Promise<void> {
   const now = Date.now();
   if (now - (lastNotice.get(topicId) ?? 0) < NOTICE_COOLDOWN_MS) return;
@@ -245,16 +269,22 @@ async function postNoSessionNotice(topicId: number, project: string): Promise<vo
         deferredAutostarts.delete(timer);
         if ((topicSessions.get(topicId)?.size ?? 0) > 0) return; // it reconnected
         if (!heldInbox.has(project)) return; // nothing left to deliver
-        const err = spawnSession(project, topicName(project), true);
-        log("session.autostart.deferred", { project, error: err ?? "" });
+        const r = autostartSpawn(project);
+        log("session.autostart.deferred", {
+          project,
+          error: r === "skipped" ? "skipped: live console" : (r ?? ""),
+        });
       }, AUTOSTART_GRACE_MS - sinceLead);
       deferredAutostarts.add(timer);
     } else {
       // Known project waking up (reboot/crash recovery) — resume its conversation.
-      const err = spawnSession(project, topicName(project), true);
-      note = err
-        ? `📴 No active session — message queued. Autostart failed: ${err}`
-        : "📴 No active session — message queued. 🚀 Starting one…";
+      const r = autostartSpawn(project);
+      note =
+        r === "skipped"
+          ? "📴 No active session registered — but a console is already running for this project; giving it a moment to reconnect…"
+          : r
+            ? `📴 No active session — message queued. Autostart failed: ${r}`
+            : "📴 No active session — message queued. 🚀 Starting one…";
     }
   }
   await bot.api
@@ -1427,7 +1457,28 @@ function notifyMirrorGap(topicId: number, sent: number, total: number): void {
 // duplication is OFF, this is the ONLY phone copy, so a failure must be VISIBLE
 // (a cooldown-guarded ⚠️ notice), the tail must not be dropped on a mid-stream
 // error, and a deleted topic is recovered like sendText's withRecovery.
-async function mirrorToTopic(project: string, text: string): Promise<void> {
+// Which registered session a mirrored answer belongs to, so a reply to it
+// routes back there instead of fanning out to every console on the project
+// (live incident: two consoles resuming one conversation both answered every
+// reply — the mirror path was project-keyed and never attributed). Matched by
+// the Claude conversation id the Stop hook forwarded; a lone session on the
+// topic owns its mirror unambiguously; two-plus unmatched sessions stay
+// untracked (the reply fans out, exactly the pre-0.20.3 behaviour).
+function mirrorOwnerSid(topicId: number, claudeSessionId?: string): string | undefined {
+  const set = topicSessions.get(topicId);
+  if (!set || set.size === 0) return undefined;
+  const members = [...set].map((sid) => ({
+    sid,
+    claudeSessionId: sessions.get(sid)?.claudeSessionId,
+  }));
+  return pickMirrorOwner(members, claudeSessionId);
+}
+
+async function mirrorToTopic(
+  project: string,
+  text: string,
+  claudeSessionId?: string,
+): Promise<void> {
   let topicId = projectTopicId(project);
   if (topicId === undefined) return;
   // Idempotent against a re-fired Stop delivering byte-identical text.
@@ -1435,24 +1486,37 @@ async function mirrorToTopic(project: string, text: string): Promise<void> {
   lastMirrored.set(project, text);
   stopTyping(topicId); // the reply is arriving — drop the "typing" keepalive
 
+  // The session this answer came from — its mirrored message(s) are tracked to
+  // it so a reply routes back (ownerSession), not fanned out.
+  const ownerSid = mirrorOwnerSid(topicId, claudeSessionId);
+  const track = (messageId: number): void => {
+    if (ownerSid && topicId !== undefined) {
+      trackSent(messageId, { topicId, sessionId: ownerSid });
+    }
+  };
+
   // Native tables when the answer contains one (see tryRichTable). A rich
   // failure falls through to the classic chunked pipeline below, which owns
   // recovery and visible-failure handling.
-  if (await tryRichTable(topicId, text)) return;
+  const richId = await tryRichTable(topicId, text);
+  if (richId !== undefined) {
+    track(richId);
+    return;
+  }
 
   const formatted = mdToTelegram(text);
   const chunks = splitTelegram(formatted.text, formatted.entities).filter((c) => c.text.trim());
   if (chunks.length === 0) return;
 
   const io: MirrorIO = {
-    send: (t, entities, notify) =>
-      bot.api
-        .sendMessage(GROUP_CHAT_ID, t, {
-          message_thread_id: topicId,
-          entities,
-          disable_notification: !notify,
-        })
-        .then(() => {}),
+    send: async (t, entities, notify) => {
+      const sent = await bot.api.sendMessage(GROUP_CHAT_ID, t, {
+        message_thread_id: topicId,
+        entities,
+        disable_notification: !notify,
+      });
+      track(sent.message_id);
+    },
     attach: (full, n) =>
       bot.api
         .sendDocument(GROUP_CHAT_ID, new InputFile(new TextEncoder().encode(full), "answer.md"), {
@@ -1635,9 +1699,10 @@ async function handle(req: Request): Promise<Response> {
   // spoke this turn (buttons/file/edit) so interactive turns aren't doubled.
   // Keyed by project, no sessionId — sits above the sid guard like /activity.
   if (path === "/mirror" && req.method === "POST") {
-    const { project, text } = (await req.json().catch(() => ({}))) as {
+    const { project, text, claudeSessionId } = (await req.json().catch(() => ({}))) as {
       project?: string;
       text?: string;
+      claudeSessionId?: string;
     };
     if (project) {
       markHooked(project); // a mirror POST proves the hook is present
@@ -1646,19 +1711,21 @@ async function handle(req: Request): Promise<Response> {
     }
     const skipped = !project || !text || !text.trim() || spokeThisTurn.has(project);
     log("mirror", { project: project ?? "", chars: (text ?? "").length, skipped });
-    if (!skipped) void mirrorToTopic(project!, text!);
+    if (!skipped) void mirrorToTopic(project!, text!, claudeSessionId);
     return json({ ok: true });
   }
 
   if (path === "/register" && req.method === "POST") {
-    const { project, name, label, prev, version, pid } = (await req.json()) as {
-      project: string;
-      name: string;
-      label?: string;
-      prev?: string;
-      version?: string;
-      pid?: number;
-    };
+    const { project, name, label, prev, version, pid, claudeSessionId } =
+      (await req.json()) as {
+        project: string;
+        name: string;
+        label?: string;
+        prev?: string;
+        version?: string;
+        pid?: number;
+        claudeSessionId?: string;
+      };
     // Version handshake: a session running newer code must lead, or every
     // plugin update silently keeps the old leader's bugs alive until the user
     // hunts down and kills the process. Step down and tell the caller to take
@@ -1689,6 +1756,10 @@ async function handle(req: Request): Promise<Response> {
       lastActive: Date.now(),
       bornAt: Date.now(),
       pid: typeof pid === "number" && Number.isFinite(pid) && pid > 1 ? pid : undefined,
+      claudeSessionId:
+        typeof claudeSessionId === "string" && claudeSessionId.trim()
+          ? claudeSessionId.trim()
+          : undefined,
     };
     sessions.set(id, fresh);
     bindTopic(id, topicId);
