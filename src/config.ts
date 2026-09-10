@@ -26,6 +26,7 @@ export const CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".cla
 export const ENV_FILE = join(STATE_DIR, ".env");
 export const TOPICS_FILE = join(STATE_DIR, "topics.json");
 export const SENT_FILE = join(STATE_DIR, "sent.json");
+export const HELD_FILE = join(STATE_DIR, "held.json");
 // Cross-process poller back-off. A 409/401 from getUpdates means another
 // consumer holds the token (or a force-killed sibling's getUpdates is still
 // open server-side). Persisting the cooldown here makes EVERY local session

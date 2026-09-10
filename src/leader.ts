@@ -81,6 +81,7 @@ import {
 } from "./spawn.ts";
 import { existsSync } from "node:fs";
 import { aliveConsolePidsFor } from "./project.ts";
+import { loadHeld, persistHeld, flushHeld } from "./held.ts";
 import { log } from "./log.ts";
 
 export type Inbound =
@@ -195,6 +196,7 @@ function holdInbound(project: string, msg: Inbound): void {
   held.at = Date.now();
   held.msgs.push(msg);
   if (held.msgs.length > HELD_MAX) held.msgs.splice(0, held.msgs.length - HELD_MAX);
+  persistHeld(heldInbox); // survive a leader hand-off (see held.ts)
 }
 
 /**
@@ -1798,6 +1800,7 @@ async function handle(req: Request): Promise<Response> {
     const held = heldInbox.get(project);
     if (held) {
       heldInbox.delete(project);
+      persistHeld(heldInbox); // drained — drop it from the on-disk queue too
       fresh.queue.push(...held.msgs);
       // Drained messages go to THIS session only — no fan-out copies exist.
       for (const m of held.msgs) fresh.soloMids.add(m.messageId);
@@ -2108,6 +2111,10 @@ export async function tryBecomeLeader(): Promise<boolean> {
   // control request or Telegram update can ever observe an empty store, and
   // the previous leader flushed before releasing the port.
   loadSent();
+  // Restore messages held for a session-less project across the hand-off (their
+  // 30-min TTL is applied on load), so a message queued moments before a leader
+  // change reaches the session that registers with the new leader.
+  for (const [k, v] of loadHeld(HELD_TTL_MS)) heldInbox.set(k, v);
 
   // We own the port -> own the bot. Do NOT drop pending updates: across a
   // leadership hand-off we still want to deliver messages the user sent while
@@ -2176,6 +2183,7 @@ export async function tryBecomeLeader(): Promise<boolean> {
     for (const [project, held] of heldInbox) {
       if (now - held.at > HELD_TTL_MS) {
         heldInbox.delete(project);
+        persistHeld(heldInbox); // expired — drop it from the on-disk queue too
         log("held.expired", { project, count: held.msgs.length });
         refreshTopicStatus(project); // 💤 no session — the queue is gone
         // Tell the user their queued messages timed out — a broken "queued"
@@ -2213,8 +2221,10 @@ export function stopLeader(): void {
   if (bunServer) {
     log("leader.stopped", { pid: process.pid });
     // The successor can only bind after we release the port — flush first so
-    // it always loads the final routing state.
+    // it always loads the final routing AND held-queue state (a message queued
+    // here must survive the hand-off, not die with this process's memory).
     flushSent();
+    flushHeld();
   }
   try {
     // Two-phase close. Graceful first: the listener closes immediately (port

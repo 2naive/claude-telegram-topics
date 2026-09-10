@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.20.4 — 2026-09-10
+
+- **Held messages survive a leader hand-off.** Live incident: a message sent to
+  a session-less topic was queued in the leader's memory, then a newer version
+  stepped up (a fresh 0.20.3 autostart console triggered the hand-off) — the
+  outgoing leader's memory was dropped before the message drained, and it
+  vanished with no trace (the session registered to the new leader, but there
+  was nothing to drain). The held-inbox is now persisted to `held.json` in the
+  channel state dir (tmp+rename, owner-gated, debounced, flushed on releasing
+  the port — the sent.json pattern), and a new leader restores it on startup
+  with the 30-minute TTL applied. Redelivery (0.14.0) covers a message lost to
+  a *session*; this covers one lost to a *leader change*. A message already
+  drained to a session that then dies mid-hand-off is still the redelivery
+  path's job, not this one.
+
 ## 0.20.3 — 2026-09-09
 
 - **A reply to an auto-mirrored answer routes back to the session that wrote it**
