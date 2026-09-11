@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.20.5 — 2026-09-11
+
+- **Native tables only for the case Telegram renders reliably.** The 0.19.0
+  native-table path sent any message with a GFM table to `sendRichMessage`, but
+  Telegram's rich-GFM parser mis-parses real multi-block reports: a status
+  message with four tables under `**1. …**`/`**2. …**` section headings came
+  out as raw pipe text swallowed into an ordered list (screenshot). The rich
+  path is now gated (`richTableEligible`) to a SINGLE standalone table within
+  the length limit and with no ordered-list-like lines; everything else — the
+  common multi-table report — falls back to our own deterministic grid/cards
+  rendering (narrow → aligned grid, wide → stacked cards), which is readable and
+  never depends on Telegram's parser. `countGfmTables` added; `richTableEligible`
+  and both are pure + tested with the incident as a regression case.
+
 ## 0.20.4 — 2026-09-10
 
 - **Held messages survive a leader hand-off.** Live incident: a message sent to

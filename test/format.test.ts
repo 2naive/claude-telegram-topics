@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { hasGfmTable, mdToTelegram, splitTelegram, MAX_ENTITIES } from "../src/format.ts";
+import { hasGfmTable, countGfmTables, richTableEligible, mdToTelegram, splitTelegram, MAX_ENTITIES } from "../src/format.ts";
 
 describe("mdToTelegram", () => {
   test("intra-word underscores stay literal (the aaa_bbb_ccc regression)", () => {
@@ -540,5 +540,49 @@ describe("hasGfmTable (rich-message routing, 0.19.0)", () => {
 
   test("a table after a closed fence is still detected", () => {
     expect(hasGfmTable("```\ncode\n```\n" + TABLE)).toBe(true);
+  });
+});
+
+describe("countGfmTables / richTableEligible (native-table gating, 0.20.5)", () => {
+  const T = (cols: string[]): string =>
+    "| " +
+    cols.join(" | ") +
+    " |\n|" +
+    cols.map(() => "---").join("|") +
+    "|\n| " +
+    cols.map(() => "x").join(" | ") +
+    " |";
+
+  test("counts multiple tables separated by prose", () => {
+    const md = T(["A", "B"]) + "\n\nsome prose\n\n" + T(["C", "D", "E"]);
+    expect(countGfmTables(md)).toBe(2);
+  });
+
+  test("a table inside a fence is not counted", () => {
+    expect(countGfmTables("```md\n" + T(["A", "B"]) + "\n```")).toBe(0);
+  });
+
+  test("a single standalone table is rich-eligible", () => {
+    expect(richTableEligible("intro\n\n" + T(["Дата", "Клики"]))).toBe(true);
+  });
+
+  test("the incident: multiple tables under **N.** headings are NOT rich-eligible", () => {
+    const md =
+      "**1. Дневная**\n\n" + T(["Дата", "Клики"]) + "\n\n**2. Группы**\n\n" + T(["Группа", "CTR"]);
+    expect(countGfmTables(md)).toBe(2);
+    expect(richTableEligible(md)).toBe(false);
+  });
+
+  test("even ONE table is not rich-eligible under a **1.** heading (list confuses parser)", () => {
+    expect(richTableEligible("**1. Секция**\n\n" + T(["A", "B"]))).toBe(false);
+    expect(richTableEligible("1. Секция\n\n" + T(["A", "B"]))).toBe(false);
+  });
+
+  test("no table -> not eligible", () => {
+    expect(richTableEligible("just prose, no table")).toBe(false);
+  });
+
+  test("over the length limit -> not eligible", () => {
+    expect(richTableEligible(T(["A", "B"]) + "\n" + "x".repeat(4096))).toBe(false);
   });
 });

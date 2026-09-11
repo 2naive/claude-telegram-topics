@@ -67,7 +67,7 @@ import {
   topicForSentMessage,
   trackSent,
 } from "./sent.ts";
-import { hasGfmTable, mdToTelegram, splitTelegram, TG_MESSAGE_LIMIT } from "./format.ts";
+import { richTableEligible, mdToTelegram, splitTelegram } from "./format.ts";
 import { mirrorChunks, type MirrorIO } from "./mirror.ts";
 import { apiRetry } from "./tgretry.ts";
 import {
@@ -1544,18 +1544,22 @@ async function mirrorToTopic(
   await mirrorChunks(chunks, text, MIRROR_MAX_CHUNKS, io);
 }
 
-// A message containing a GFM table is first tried as ONE rich message (Bot API
-// 10.2): Telegram parses GFM server-side and every client renders a real
-// table, instead of our monospace grid / stacked cards. Everything else — and
-// any rich failure (parse reject, undocumented caps, thread gone) — falls back
-// to the classic entity pipeline, so delivery never depends on the newer API.
-// Rich length limits are undocumented; staying within the known message limit.
+// A message with a SINGLE standalone GFM table is sent as one rich message
+// (Bot API 10.2): Telegram parses the GFM server-side and renders a real table,
+// nicer than our monospace grid / cards. But Telegram's GFM parser is fragile
+// on real multi-block messages — SEVERAL tables, or a table mixed with
+// list-like headings, mis-parse badly (live incident: `**1. …**`/`**2. …**`
+// section headings were read as an ordered list that swallowed the tables into
+// it as raw pipe text). So the rich path is gated to the safe case; everything
+// else — and any rich failure (parse reject, caps, thread gone) — falls back to
+// the classic entity pipeline (deterministic grid/cards), so delivery never
+// depends on the newer API and complex reports stay readable.
 async function tryRichTable(
   topicId: number,
   md: string,
   reply_markup?: { inline_keyboard: { text: string; callback_data: string }[][] },
 ): Promise<number | undefined> {
-  if (md.length > TG_MESSAGE_LIMIT || !hasGfmTable(md)) return undefined;
+  if (!richTableEligible(md)) return undefined;
   try {
     const sent = await bot.api.sendRichMessage(
       GROUP_CHAT_ID,

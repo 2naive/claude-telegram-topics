@@ -396,13 +396,18 @@ function isBlockStart(lines: string[], i: number): boolean {
 }
 
 /**
- * True when the markdown contains a GFM table outside fenced code blocks.
- * Used to route a message to Telegram's native rich-message tables (Bot API
- * 10.2) instead of the grid/cards rendering. A table inside a code fence is
- * someone SHOWING markdown, not a table — it must not trigger the rich path.
+ * Number of GFM tables outside fenced code blocks. Used to route a message to
+ * Telegram's native rich-message tables (Bot API 10.2) only when it is safe:
+ * a SINGLE standalone table renders natively fine, but several tables — or a
+ * table mixed with list-like headings — make Telegram's GFM parser mis-parse
+ * (live incident: `**1. …**`/`**2. …**` section headings were read as an
+ * ordered list that swallowed the tables into it as raw pipe text). Multiple
+ * tables therefore fall back to our own deterministic grid/cards rendering.
+ * A table inside a code fence is someone SHOWING markdown and is not counted.
  */
-export function hasGfmTable(input: string): boolean {
+export function countGfmTables(input: string): number {
   const lines = input.replace(/\r\n?/g, "\n").split("\n");
+  let count = 0;
   for (let i = 0; i < lines.length; i++) {
     const fence = /^(`{3,})[^`\n]*$/.exec(lines[i]!);
     if (fence) {
@@ -412,9 +417,41 @@ export function hasGfmTable(input: string): boolean {
       i = j;
       continue;
     }
-    if (startsTable(lines, i)) return true;
+    if (startsTable(lines, i)) {
+      count++;
+      // Skip past this table's body rows so its rows aren't re-counted.
+      let j = i + 2;
+      while (j < lines.length && looksLikeTableRow(lines[j]!) && lines[j]!.trim() !== "") j++;
+      i = j - 1;
+    }
   }
-  return false;
+  return count;
+}
+
+/** True when the markdown contains at least one GFM table (outside fences). */
+export function hasGfmTable(input: string): boolean {
+  return countGfmTables(input) > 0;
+}
+
+// A line that Telegram's rich-GFM parser reads as an ordered-list item —
+// including a bold-wrapped one like `**1. Section**`. Such a line makes the
+// parser treat following tables as list content and render them as raw pipe
+// text (live incident), so a message containing one must not take the rich path.
+const ORDERED_LIST_LINE = /^[ \t]*(?:\*\*)?\d+[.)]/m;
+
+/**
+ * Whether a message is safe to send as ONE Telegram rich message (native
+ * tables). Only a single standalone table within the length limit and with no
+ * list-like lines: Telegram's GFM parser mis-parses several tables, or a table
+ * mixed with ordered-list headings, into raw pipe text. Everything else uses
+ * our own deterministic grid/cards rendering instead.
+ */
+export function richTableEligible(md: string): boolean {
+  return (
+    md.length <= TG_MESSAGE_LIMIT &&
+    countGfmTables(md) === 1 &&
+    !ORDERED_LIST_LINE.test(md)
+  );
 }
 
 function emitBlocks(src: string, out: Out): void {
