@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.20.6 — 2026-09-12
+
+- **Native Telegram tables withdrawn — tables render deterministically again.**
+  The 0.19.0 native-table path (`sendRichMessage`, Bot API 10.2) is removed.
+  Telegram's server-side GFM parser mis-renders real reports and the failures
+  were unpredictable: 0.20.5 narrowed the path to a single standalone table, but
+  even that came out crooked (a lone table with bold cells and a trailing bullet
+  list — screenshot). Tables now always go through our own grid/cards renderer
+  (narrow → aligned monospace grid, wide → stacked cards), which is readable on
+  a phone and never depends on Telegram's parser. `hasGfmTable`, `countGfmTables`
+  and `richTableEligible` are removed with the path.
+
 ## 0.20.5 — 2026-09-11
 
 - **Native tables only for the case Telegram renders reliably.** The 0.19.0
