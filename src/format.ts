@@ -395,6 +395,64 @@ function isBlockStart(lines: string[], i: number): boolean {
   return isFenceOpen(l) || HEADING_RE.test(l) || startsTable(lines, i);
 }
 
+/** True when the markdown contains a GFM table outside fenced code blocks — the
+ * signal to route a message through Telegram's native rich tables. */
+export function hasGfmTable(input: string): boolean {
+  const lines = input.replace(/\r\n?/g, "\n").split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const fence = /^(`{3,})[^`\n]*$/.exec(lines[i]!);
+    if (fence) {
+      const closeRe = new RegExp("^`{" + fence[1]!.length + ",}\\s*$");
+      let j = i + 1;
+      while (j < lines.length && !closeRe.test(lines[j]!)) j++;
+      i = j;
+      continue;
+    }
+    if (startsTable(lines, i)) return true;
+  }
+  return false;
+}
+
+/**
+ * Ensure a blank line sits immediately BEFORE and AFTER every GFM table, so
+ * Telegram's rich-message parser recognizes it. THE fix for the crooked-tables
+ * bug: GFM (correctly) treats a table glued to a preceding paragraph line as
+ * part of that paragraph and renders it as raw pipe text — the model routinely
+ * writes `Заголовок:\n| a | b |` with no blank line between (reproduced live:
+ * K crooked, K+blank-line M perfect). Idempotent — a table already blank-line
+ * separated is untouched. Tables inside code fences are left verbatim.
+ */
+export function normalizeTablesForRich(input: string): string {
+  const lines = input.replace(/\r\n?/g, "\n").split("\n");
+  const out: string[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i]!;
+    const fence = /^(`{3,})[^`\n]*$/.exec(line);
+    if (fence) {
+      out.push(line);
+      const closeRe = new RegExp("^`{" + fence[1]!.length + ",}\\s*$");
+      i++;
+      while (i < lines.length && !closeRe.test(lines[i]!)) out.push(lines[i++]!);
+      if (i < lines.length) out.push(lines[i++]!);
+      continue;
+    }
+    if (startsTable(lines, i)) {
+      if (out.length > 0 && out[out.length - 1]!.trim() !== "") out.push(""); // blank BEFORE
+      out.push(line, lines[i + 1]!); // header + separator
+      i += 2;
+      while (i < lines.length && looksLikeTableRow(lines[i]!) && lines[i]!.trim() !== "") {
+        out.push(lines[i++]!);
+      }
+      if (i < lines.length && lines[i]!.trim() !== "") out.push(""); // blank AFTER
+      continue;
+    }
+    out.push(line);
+    i++;
+  }
+  return out.join("\n");
+}
+
 function emitBlocks(src: string, out: Out): void {
   const lines = src.split("\n");
   let i = 0;

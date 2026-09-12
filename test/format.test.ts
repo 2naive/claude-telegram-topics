@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mdToTelegram, splitTelegram, MAX_ENTITIES } from "../src/format.ts";
+import { hasGfmTable, normalizeTablesForRich, mdToTelegram, splitTelegram, MAX_ENTITIES } from "../src/format.ts";
 
 describe("mdToTelegram", () => {
   test("intra-word underscores stay literal (the aaa_bbb_ccc regression)", () => {
@@ -515,5 +515,59 @@ describe("wide tables become stacked cards (0.18.0)", () => {
     // the dashed rule is capped at the header line's width, not the widest cell
     expect(lines[1]!.length).toBeLessThanOrEqual(lines[0]!.length);
     expect(lines[1]!.endsWith("+")).toBe(false);
+  });
+});
+
+describe("normalizeTablesForRich (blank line around tables for native rich, 0.20.7)", () => {
+  const L = (...lines: string[]): string => lines.join("\n");
+
+  test("THE fix: a table glued to the preceding line gets a blank line before it", () => {
+    const glued = L("Сегменты:", "| A | B |", "|---|---|", "| 1 | 2 |");
+    expect(normalizeTablesForRich(glued)).toBe(
+      L("Сегменты:", "", "| A | B |", "|---|---|", "| 1 | 2 |"),
+    );
+  });
+
+  test("a blank line is also inserted AFTER a table glued to following prose", () => {
+    const glued = L("| A | B |", "|---|---|", "| 1 | 2 |", "хвост");
+    expect(normalizeTablesForRich(glued)).toBe(
+      L("| A | B |", "|---|---|", "| 1 | 2 |", "", "хвост"),
+    );
+  });
+
+  test("idempotent: an already blank-line-separated table is untouched", () => {
+    const ok = L("Заголовок:", "", "| A | B |", "|---|---|", "| 1 | 2 |", "", "хвост");
+    expect(normalizeTablesForRich(ok)).toBe(ok);
+  });
+
+  test("the K incident: heading glued to a table is fixed", () => {
+    const k = L(
+      "Пересобрано.",
+      "",
+      "Сегменты (после вычета paid):",
+      "| Сегмент | Май |",
+      "|---|---|",
+      "| google | 910 |",
+      "",
+      "Проверено:",
+    );
+    const fixed = normalizeTablesForRich(k);
+    expect(fixed).toContain(L("Сегменты (после вычета paid):", "", "| Сегмент | Май |"));
+    expect(hasGfmTable(fixed)).toBe(true);
+  });
+
+  test("a table inside a code fence is left verbatim (no blank line injected)", () => {
+    const fenced = L("```md", "text", "| A | B |", "|---|---|", "| 1 | 2 |", "```");
+    expect(normalizeTablesForRich(fenced)).toBe(fenced);
+  });
+
+  test("no table -> unchanged", () => {
+    expect(normalizeTablesForRich(L("just prose", "more prose"))).toBe(L("just prose", "more prose"));
+  });
+
+  test("hasGfmTable detects a table but not a fenced one", () => {
+    expect(hasGfmTable(L("x", "| A | B |", "|---|---|", "| 1 | 2 |"))).toBe(true);
+    expect(hasGfmTable(L("```", "| A | B |", "|---|---|", "```"))).toBe(false);
+    expect(hasGfmTable("no table here")).toBe(false);
   });
 });

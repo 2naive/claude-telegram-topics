@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.20.7 — 2026-09-12
+
+- **Native Telegram tables restored — the bug was ours, not Telegram's.** A
+  direct-probe experiment (twelve `sendRichMessage` variants A–M) showed
+  Telegram renders every table shape perfectly — multiple tables, wide, bold
+  cells, numbered `**1.**` headings, trailing lists — with one exception: a
+  table with **no blank line before it**. The model routinely writes
+  `Заголовок:` immediately above `| … |`, and GFM (correctly) reads that as a
+  paragraph, rendering the table as raw pipe text. Reproduced live: text K
+  (glued) crooked, the same text with one inserted blank line (M) perfect. So
+  0.20.6's removal is reverted and the rich-table path returns, now running the
+  markdown through `normalizeTablesForRich`, which inserts the required blank
+  line before and after every GFM table (idempotent; code-fenced tables left
+  verbatim). Any rich failure still falls back to the grid/cards renderer.
+
 ## 0.20.6 — 2026-09-12
 
 - **Native Telegram tables withdrawn — tables render deterministically again.**
