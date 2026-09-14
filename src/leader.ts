@@ -45,6 +45,7 @@ import {
   parseCallback,
   planRescue,
   pickMirrorOwner,
+  partitionConsoles,
   permCallbackData,
   sessionPrefix,
   startCallbackData,
@@ -245,20 +246,32 @@ function rescueOrphans(
 const AUTOSTART_GRACE_MS = 45_000;
 const deferredAutostarts = new Set<ReturnType<typeof setTimeout>>();
 
-// Spawn a console for `project` UNLESS one is already alive per the Claude Code
-// session records — registered OR deaf-but-alive. Stacking a fresh --continue
-// console on a living-but-silent one is exactly how duplicate consoles on a
-// single conversation accumulated (each 💤 spawned another; the old process
-// lingered; once it recovered, BOTH answered every message). A deaf console is
-// expected to self-heal now (0.20.1 loop watchdog + 0.20.2 identity), so
-// skipping is correct; if it truly never recovers the held message expires and
-// the user relaunches. Returns "skipped" when a live console exists, else the
-// spawnSession result (an error string or null on success).
+// A console younger than this is still BOOTING (starting up, about to register)
+// — stacking a spawn on it would duplicate the conversation, so autostart waits.
+// Older than this AND still unregistered (autostart only runs with no registered
+// session) means a stale ZOMBIE — deaf/wedged and not recovering — which must be
+// cleared, not deferred to (live incident: hh held a message behind an 11-day
+// silent console because the guard blocked on ANY alive pid).
+const CONSOLE_BOOT_MS = 120_000;
+
+// Spawn a console for `project`. A BOOTING console (young, about to register)
+// blocks the spawn to avoid a duplicate conversation. A stale ZOMBIE (alive but
+// long unregistered and silent — records with no recent start) is killed first,
+// then the spawn proceeds, so a wedged console can't strand the topic forever.
+// Returns "skipped" when a booting console blocks, else the spawnSession result.
 function autostartSpawn(project: string): "skipped" | string | null {
-  const alive = aliveConsolePidsFor(project);
-  if (alive.length > 0) {
-    log("session.autostart.skip", { project, alivePids: alive.join(",") });
+  const { booting, zombies } = partitionConsoles(
+    aliveConsolePidsFor(project),
+    Date.now(),
+    CONSOLE_BOOT_MS,
+  );
+  if (booting.length > 0) {
+    log("session.autostart.skip", { project, bootingPids: booting.map((c) => c.pid).join(",") });
     return "skipped";
+  }
+  for (const z of zombies) {
+    const killed = stopProcessTree(z.pid);
+    log("session.zombie.killed", { project, pid: z.pid, killed });
   }
   return spawnSession(project, topicName(project), true);
 }

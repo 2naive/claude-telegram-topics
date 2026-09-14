@@ -261,3 +261,24 @@ export function pickMirrorOwner(
   }
   return members.length === 1 ? members[0]!.sid : undefined;
 }
+
+/**
+ * Split alive consoles into BOOTING (young — still starting up, about to
+ * register: a spawn would duplicate the conversation, so autostart waits) and
+ * ZOMBIES (old and still unregistered — deaf/wedged, not recovering: must be
+ * cleared so a stuck console can't strand the topic). A console with no known
+ * start time is treated as a zombie (can't prove it's booting). Pure.
+ */
+export function partitionConsoles<C extends { startedAt: number | null }>(
+  alive: C[],
+  now: number,
+  bootMs: number,
+): { booting: C[]; zombies: C[] } {
+  const booting: C[] = [];
+  const zombies: C[] = [];
+  for (const c of alive) {
+    if (c.startedAt !== null && now - c.startedAt < bootMs) booting.push(c);
+    else zombies.push(c);
+  }
+  return { booting, zombies };
+}

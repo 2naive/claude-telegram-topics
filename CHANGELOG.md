@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.20.8 — 2026-09-15
+
+- **A stale console no longer blocks autostart forever.** The 0.20.3 dedup guard
+  skipped autostart whenever ANY console was alive for the project, to avoid
+  stacking a duplicate on one that was merely booting. But a deaf/wedged console
+  that never recovers is also "alive", so it blocked recovery indefinitely
+  (live incident: hh held a message behind an 11-day-old console that had been
+  silent for 6 days). The guard now tells the two apart by the session record's
+  start time: a console younger than 120 s is BOOTING (about to register) and
+  still blocks the spawn; an older still-unregistered one is a ZOMBIE and is
+  killed (`stopProcessTree`, logged `session.zombie.killed`) before autostart
+  proceeds. `partitionConsoles` is pure and tested with the incident as a case.
+
 ## 0.20.7 — 2026-09-12
 
 - **Native Telegram tables restored — the bug was ours, not Telegram's.** A

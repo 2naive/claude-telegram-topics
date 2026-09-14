@@ -193,22 +193,31 @@ export function claudePid(): number | null {
  * project root, so the cwd is the key. A stale record whose pid was reused by an
  * unrelated process is a rare false-positive whose only cost is a deferred
  * autostart (the message stays queued) — far cheaper than stacking zombies.
+ *
+ * `startedAt` (the record's session start time) rides along so the caller can
+ * tell a BOOTING console (young, about to register) from a stale ZOMBIE (old,
+ * alive, but long unregistered and silent): blocking autostart on the former
+ * avoids a duplicate, blocking on the latter wrongly strands the topic (live
+ * incident: hh held a message behind an 11-day-old silent console).
  */
-export function aliveConsolePidsFor(project: string): number[] {
-  const out: number[] = [];
+export function aliveConsolePidsFor(project: string): AliveConsole[] {
+  const out: AliveConsole[] = [];
   for (const r of readSessionRecords()) {
     if (typeof r.pid !== "number" || r.pid <= 1) continue;
     if (typeof r.cwd !== "string" || !r.cwd.trim()) continue;
     if (normalizePath(r.cwd) !== project) continue;
+    const startedAt = typeof r.startedAt === "number" ? r.startedAt : null;
     try {
       process.kill(r.pid, 0);
-      out.push(r.pid);
+      out.push({ pid: r.pid, startedAt });
     } catch (e) {
-      if ((e as { code?: string }).code === "EPERM") out.push(r.pid);
+      if ((e as { code?: string }).code === "EPERM") out.push({ pid: r.pid, startedAt });
     }
   }
   return out;
 }
+
+export type AliveConsole = { pid: number; startedAt: number | null };
 
 /**
  * This session's Claude Code conversation id (the sessions/<pid>.json

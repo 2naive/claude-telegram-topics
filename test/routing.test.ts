@@ -3,6 +3,7 @@ import {
   isNewerVersion,
   planRescue,
   pickMirrorOwner,
+  partitionConsoles,
   parseCallback,
   permCallbackData,
   pickSessionField,
@@ -364,5 +365,42 @@ describe("pickMirrorOwner (reply attribution for auto-mirror, 0.20.3)", () => {
     const members = [m("consoleA", "conv-A"), m("consoleB", "conv-B")];
     expect(pickMirrorOwner(members, "conv-A")).toBe("consoleA");
     expect(pickMirrorOwner(members, "conv-B")).toBe("consoleB");
+  });
+});
+
+describe("partitionConsoles (booting vs zombie autostart guard, 0.20.8)", () => {
+  const now = 1_000_000_000_000;
+  const BOOT = 120_000;
+  const C = (pid, ageMs) => ({ pid, startedAt: ageMs === null ? null : now - ageMs });
+
+  test("a young console is booting (blocks autostart, not killed)", () => {
+    const { booting, zombies } = partitionConsoles([C(1, 10_000)], now, BOOT);
+    expect(booting.map((c) => c.pid)).toEqual([1]);
+    expect(zombies).toEqual([]);
+  });
+
+  test("the hh incident: an 11-day-old alive console is a zombie", () => {
+    const elefenDays = 11 * 24 * 3600_000;
+    const { booting, zombies } = partitionConsoles([C(252008, elefenDays)], now, BOOT);
+    expect(booting).toEqual([]);
+    expect(zombies.map((c) => c.pid)).toEqual([252008]);
+  });
+
+  test("a console with no known start time is treated as a zombie", () => {
+    const { booting, zombies } = partitionConsoles([C(9, null)], now, BOOT);
+    expect(booting).toEqual([]);
+    expect(zombies.map((c) => c.pid)).toEqual([9]);
+  });
+
+  test("mixed: young blocks, old is a zombie", () => {
+    const { booting, zombies } = partitionConsoles([C(1, 5_000), C(2, 600_000)], now, BOOT);
+    expect(booting.map((c) => c.pid)).toEqual([1]);
+    expect(zombies.map((c) => c.pid)).toEqual([2]);
+  });
+
+  test("exactly at the boundary is a zombie (not younger than bootMs)", () => {
+    const { booting, zombies } = partitionConsoles([C(1, BOOT)], now, BOOT);
+    expect(booting).toEqual([]);
+    expect(zombies.map((c) => c.pid)).toEqual([1]);
   });
 });
