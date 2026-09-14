@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.20.9 — 2026-09-15
+
+- **Telegram service messages no longer wake the session.** Pinning a message
+  in a topic (and other service events — forum-topic changes, member joins,
+  video-chat events) arrives on the same `message` update as user text but
+  carries no prompt; the bridge was forwarding it to the session as
+  `[non-text message]`, triggering a spurious turn (live: a pin in telebot).
+  The message handler now drops service messages (`isServiceMessage`) before
+  delivery. Genuine unhandled user media (a sticker, a voice note) still passes
+  through as the `[non-text message]` placeholder. `isServiceMessage` is pure
+  and tested.
+
 ## 0.20.8 — 2026-09-15
 
 - **A stale console no longer blocks autostart forever.** The 0.20.3 dedup guard

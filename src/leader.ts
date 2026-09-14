@@ -46,6 +46,7 @@ import {
   planRescue,
   pickMirrorOwner,
   partitionConsoles,
+  isServiceMessage,
   permCallbackData,
   sessionPrefix,
   startCallbackData,
@@ -996,6 +997,10 @@ function initBot(): void {
   bot.on("message", async (ctx) => {
     const m = ctx.message;
     if (!inGroup(m.chat.id)) return;
+    // Service messages (a pin, a forum-topic event, a member change) carry no
+    // user prompt — never forward one as a turn (live: pinning in telebot woke
+    // the session with "[non-text message]").
+    if (isServiceMessage(m as unknown as Record<string, unknown>)) return;
     if (m.from?.is_bot) return;
     if (!isAllowedUser(m.from?.id)) return;
     const topicId = m.message_thread_id;

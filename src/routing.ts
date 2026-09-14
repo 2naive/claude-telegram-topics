@@ -269,6 +269,49 @@ export function pickMirrorOwner(
  * cleared so a stuck console can't strand the topic). A console with no known
  * start time is treated as a zombie (can't prove it's booting). Pure.
  */
+// Telegram service messages arrive on the same "message" update as user text
+// but carry NO user content — a pin, a forum-topic event, a member change, a
+// video-chat event. Forwarding one to the session spuriously wakes it (live:
+// a pinned message reached telebot as "[non-text message]" and triggered a
+// turn). These are the service fields whose mere presence marks such a message.
+const SERVICE_MESSAGE_KEYS = [
+  "pinned_message",
+  "new_chat_members",
+  "left_chat_member",
+  "new_chat_title",
+  "new_chat_photo",
+  "delete_chat_photo",
+  "group_chat_created",
+  "supergroup_chat_created",
+  "channel_chat_created",
+  "message_auto_delete_timer_changed",
+  "migrate_to_chat_id",
+  "migrate_from_chat_id",
+  "forum_topic_created",
+  "forum_topic_edited",
+  "forum_topic_closed",
+  "forum_topic_reopened",
+  "general_forum_topic_hidden",
+  "general_forum_topic_unhidden",
+  "video_chat_scheduled",
+  "video_chat_started",
+  "video_chat_ended",
+  "video_chat_participants_invited",
+  "write_access_allowed",
+  "users_shared",
+  "chat_shared",
+  "boost_added",
+  "proximity_alert_triggered",
+] as const;
+
+/** True for a Telegram service message (a pin, a forum-topic event, a member
+ * or chat change) — carries no user prompt, so the bridge must not forward it
+ * to the session. Pure. */
+export function isServiceMessage(msg: Record<string, unknown> | null | undefined): boolean {
+  if (!msg) return false;
+  return SERVICE_MESSAGE_KEYS.some((k) => msg[k] !== undefined && msg[k] !== null);
+}
+
 export function partitionConsoles<C extends { startedAt: number | null }>(
   alive: C[],
   now: number,

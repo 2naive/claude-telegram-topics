@@ -4,6 +4,7 @@ import {
   planRescue,
   pickMirrorOwner,
   partitionConsoles,
+  isServiceMessage,
   parseCallback,
   permCallbackData,
   pickSessionField,
@@ -402,5 +403,43 @@ describe("partitionConsoles (booting vs zombie autostart guard, 0.20.8)", () => 
     const { booting, zombies } = partitionConsoles([C(1, BOOT)], now, BOOT);
     expect(booting).toEqual([]);
     expect(zombies.map((c) => c.pid)).toEqual([1]);
+  });
+});
+
+describe("isServiceMessage (skip Telegram pins & service messages, 0.20.9)", () => {
+  test("a pinned-message service message is a service message", () => {
+    expect(isServiceMessage({ message_id: 5, pinned_message: { message_id: 4, text: "x" } })).toBe(
+      true,
+    );
+  });
+
+  test("forum-topic and member service messages are service messages", () => {
+    expect(isServiceMessage({ forum_topic_created: { name: "t" } })).toBe(true);
+    expect(isServiceMessage({ new_chat_members: [{ id: 1 }] })).toBe(true);
+    expect(isServiceMessage({ new_chat_title: "New" })).toBe(true);
+  });
+
+  test("a normal text message is NOT a service message", () => {
+    expect(isServiceMessage({ message_id: 5, text: "привет" })).toBe(false);
+  });
+
+  test("a photo/document/caption message is NOT a service message", () => {
+    expect(isServiceMessage({ photo: [{ file_id: "a" }] })).toBe(false);
+    expect(isServiceMessage({ document: { file_id: "a" }, caption: "hi" })).toBe(false);
+  });
+
+  test("an unhandled-media message (sticker/voice) is NOT service — the placeholder still applies", () => {
+    expect(isServiceMessage({ sticker: { file_id: "s" } })).toBe(false);
+    expect(isServiceMessage({ voice: { file_id: "v" } })).toBe(false);
+  });
+
+  test("null/undefined/empty are not service messages", () => {
+    expect(isServiceMessage(null)).toBe(false);
+    expect(isServiceMessage(undefined)).toBe(false);
+    expect(isServiceMessage({})).toBe(false);
+  });
+
+  test("a service field explicitly null does not count", () => {
+    expect(isServiceMessage({ pinned_message: null, text: "hi" })).toBe(false);
   });
 });
