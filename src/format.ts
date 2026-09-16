@@ -85,6 +85,17 @@ const isContentStart = (ch: string | undefined): boolean =>
   ch !== undefined && (isHighSurrogate(ch) || SYMBOLIC.test(ch));
 const isContentEnd = (ch: string | undefined): boolean =>
   ch !== undefined && (isLowSurrogate(ch) || SYMBOLIC.test(ch));
+// A run may also start on an OPENING quote and end on a CLOSING one — the model
+// bolds quoted phrases constantly (`**«Доходимость»**`, `**"Report"**`), which
+// the alnum/symbol opener left literal (live incident: newrelic showed raw `**`
+// around `«…»` titles). `\p{Pi}`/`\p{Pf}` are the initial/final quote classes
+// (« „ “ ‘ … » ” ’); straight `"'` serve both. Brackets are deliberately
+// excluded so `**/dist`, `(*a)*(*b)` stay literal.
+const OPEN_QUOTE = /[\p{Pi}"']/u;
+const CLOSE_QUOTE = /[\p{Pf}"']/u;
+const opensOnQuote = (ch: string | undefined): boolean => ch !== undefined && OPEN_QUOTE.test(ch);
+const closesOnQuote = (ch: string | undefined): boolean =>
+  ch !== undefined && CLOSE_QUOTE.test(ch);
 
 // Emphasis flanking, tightened past bare CommonMark for model output where
 // code-shaped text must survive verbatim. An emphasis run (length-`len` marker
@@ -99,7 +110,9 @@ function opensAt(src: string, i: number, len: number, marker: string): boolean {
   const leftOk =
     marker === "_" ? left === undefined || UNDERSCORE_LEFT.test(left) : !isAlnum(left);
   const right = src[i + len];
-  return leftOk && (isAlnum(right) || isMarker(right) || isContentStart(right));
+  return (
+    leftOk && (isAlnum(right) || isMarker(right) || isContentStart(right) || opensOnQuote(right))
+  );
 }
 
 function findClose(src: string, from: number, marker: string, len: number): number {
@@ -116,7 +129,7 @@ function findClose(src: string, from: number, marker: string, len: number): numb
     // `**`/`~~` is lax here so `**Heading:**` (trailing colon) still bolds.
     if (
       len === 1
-        ? !(isAlnum(src[j - 1]) || isContentEnd(src[j - 1]))
+        ? !(isAlnum(src[j - 1]) || isContentEnd(src[j - 1]) || closesOnQuote(src[j - 1]))
         : /\s/.test(src[j - 1] ?? "")
     )
       continue;

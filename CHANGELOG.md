@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.20.10 — 2026-09-16
+
+- **Bold/italic around a quoted phrase renders instead of leaking `**`.** The
+  emphasis-opener rule only opened on content starting with a letter, digit,
+  emoji or nested marker, so `**«Доходимость»**` / `**"Report"**` — bold wrapping
+  a quoted title, which the model writes constantly — stayed literal (live:
+  newrelic showed raw `**` around `«…»` headings). The opener now also accepts an
+  initial quote (`\p{Pi}` and straight `"'`) and the single-marker closer accepts
+  a final quote (`\p{Pf}`). Brackets stay excluded, so code shapes (`**/dist`,
+  `(*a)*(*b)`, `*.log`) remain literal.
+
 ## 0.20.9 — 2026-09-15
 
 - **Telegram service messages no longer wake the session.** Pinning a message

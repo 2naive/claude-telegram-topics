@@ -571,3 +571,39 @@ describe("normalizeTablesForRich (blank line around tables for native rich, 0.20
     expect(hasGfmTable("no table here")).toBe(false);
   });
 });
+
+describe("quote-flanked emphasis (0.20.10)", () => {
+  test("THE fix: bold around a guillemet-quoted phrase (**«…»**)", () => {
+    const r = mdToTelegram("1. **«Доходимость по DID»** — линейный график");
+    expect(r.text).toBe("1. «Доходимость по DID» — линейный график");
+    const bold = (r.entities ?? []).find((e) => e.type === "bold")!;
+    expect(bold).toBeDefined();
+    expect(r.text.slice(bold.offset, bold.offset + bold.length)).toBe("«Доходимость по DID»");
+  });
+
+  test("bold around straight-quoted text (**\"…\"**)", () => {
+    const r = mdToTelegram('the **"Report"** widget');
+    expect(r.text).toBe('the "Report" widget');
+    expect((r.entities ?? []).some((e) => e.type === "bold")).toBe(true);
+  });
+
+  test("italic around a quoted phrase (*«…»*)", () => {
+    const r = mdToTelegram("см. *«таблица»* ниже");
+    expect(r.text).toBe("см. «таблица» ниже");
+    expect((r.entities ?? []).some((e) => e.type === "italic")).toBe(true);
+  });
+
+  test("no literal ** left when several quoted-bold titles in a list", () => {
+    const r = mdToTelegram("1. **«А»** текст\n2. **«Б»** текст");
+    expect(r.text).not.toContain("**");
+    expect((r.entities ?? []).filter((e) => e.type === "bold").length).toBe(2);
+  });
+
+  test("code shapes with brackets/globs still stay literal (quotes ≠ brackets)", () => {
+    for (const src of ["webpack **/dist/**", "2 ** 3 ** 4", "C expr (*a)*(*b)", "cleanup *.log"]) {
+      const r = mdToTelegram(src);
+      expect(r.text).toBe(src);
+      expect(r.entities).toBeUndefined();
+    }
+  });
+});
