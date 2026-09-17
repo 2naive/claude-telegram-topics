@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.20.11 — 2026-09-18
+
+- **Short turns no longer rename the topic ("CC renamed the topic…" spam).**
+  The ⏳ working badge is now applied lazily: only a turn still running after
+  2 minutes (`WORKING_APPLY_DELAY_MS`) renames the topic. Previously every
+  turn — including quiet half-hourly `/loop` monitor ticks — flipped ⏳↔🟢,
+  and Telegram posts a service message into the topic for each rename (live:
+  slack topic collected "renamed" pairs every tick overnight). A short turn
+  now never touches the name: its target returns to ready before the delayed
+  edit fires and coalesces into a no-op. Ready/🔔/📥 transitions keep the
+  600 ms debounce and re-arm a pending working hold, so a permission relay's
+  🔔 never waits behind the 2-minute delay.
+
 ## 0.20.10 — 2026-09-16
 
 - **Bold/italic around a quoted phrase renders instead of leaking `**`.** The

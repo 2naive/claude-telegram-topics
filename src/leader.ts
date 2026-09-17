@@ -592,7 +592,18 @@ function topicStatusOf(project: string): TopicStatus {
 // Debounce+coalesce per topic so a burst of transitions (or a quick micro-turn)
 // costs one edit carrying the LATEST state, never a flood.
 const STATUS_DEBOUNCE_MS = 600;
-const statusTimers = new Map<number, ReturnType<typeof setTimeout>>();
+// Every rename posts a "topic renamed" service message into the topic, so a
+// working↔ready flip per turn is two lines of noise — unbearable for recurring
+// loop/monitor ticks. The ⏳ badge is therefore applied LAZILY: only a turn
+// still running after this hold ever renames the topic; a shorter turn's
+// target returns to ready before the timer fires and the edit coalesces into
+// a no-op (no rename at all). Ready/🔔/📥 keep the fast debounce — they are
+// user-facing state and must not wait behind a pending working hold.
+const WORKING_APPLY_DELAY_MS = 120_000;
+const statusTimers = new Map<
+  number,
+  { timer: ReturnType<typeof setTimeout>; delay: number }
+>();
 const statusTarget = new Map<number, TopicStatus>();
 
 function refreshTopicStatus(project: string): void {
@@ -601,8 +612,18 @@ function refreshTopicStatus(project: string): void {
   if (topicId === undefined) return;
   const status = topicStatusOf(project);
   statusTarget.set(topicId, status);
-  if (topicStatusNow.get(topicId) === status && !statusTimers.has(topicId)) return;
-  if (statusTimers.has(topicId)) return; // a debounced edit is pending; it reads the latest target
+  const delay = status === "working" ? WORKING_APPLY_DELAY_MS : STATUS_DEBOUNCE_MS;
+  const pending = statusTimers.get(topicId);
+  if (pending) {
+    // A pending edit reads the latest target when it fires. Re-arm only when
+    // the new target deserves a FASTER apply than the pending one (a working
+    // hold superseded by ready/🔔); never stretch an already-armed timer.
+    if (delay >= pending.delay) return;
+    clearTimeout(pending.timer);
+    statusTimers.delete(topicId);
+  } else if (topicStatusNow.get(topicId) === status) {
+    return;
+  }
   const timer = setTimeout(() => {
     statusTimers.delete(topicId);
     const want = statusTarget.get(topicId);
@@ -620,9 +641,9 @@ function refreshTopicStatus(project: string): void {
         if (!String(e).includes("TOPIC_NOT_MODIFIED"))
           log("badge.fail", { topicId, error: String(e) });
       });
-  }, STATUS_DEBOUNCE_MS);
+  }, delay);
   timer.unref?.();
-  statusTimers.set(topicId, timer);
+  statusTimers.set(topicId, { timer, delay });
 }
 
 // Recent inbound (user-sent) message ids per topic, so /react can acknowledge
@@ -2287,7 +2308,7 @@ export function stopLeader(): void {
   }
   typingUntil.clear();
   // Drop pending status-badge and activity-TTL timers too.
-  for (const t of statusTimers.values()) clearTimeout(t);
+  for (const t of statusTimers.values()) clearTimeout(t.timer);
   statusTimers.clear();
   for (const t of activityTimers.values()) clearTimeout(t);
   activityTimers.clear();
