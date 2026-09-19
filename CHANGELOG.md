@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.20.12 — 2026-09-20
+
+- **Long reports with a table now render as a native table, not stacked cards.**
+  The rich-table path was gated at the 4096 plain-message limit, so any answer
+  over that fell to the classic pipeline and a wide table came out as cards
+  (live: greensms_sip, a 4145-char answer). Rich messages hold far more — a live
+  probe had Telegram accept 48 KB — so the cap is raised to 40 000, covering any
+  real report; a genuinely oversized message still rich-fails and falls back to
+  the split classic pipeline.
+
 ## 0.20.11 — 2026-09-18
 
 - **Short turns no longer rename the topic ("CC renamed the topic…" spam).**

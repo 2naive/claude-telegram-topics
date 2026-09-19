@@ -69,13 +69,7 @@ import {
   topicForSentMessage,
   trackSent,
 } from "./sent.ts";
-import {
-  hasGfmTable,
-  normalizeTablesForRich,
-  mdToTelegram,
-  splitTelegram,
-  TG_MESSAGE_LIMIT,
-} from "./format.ts";
+import { hasGfmTable, normalizeTablesForRich, mdToTelegram, splitTelegram } from "./format.ts";
 import { mirrorChunks, type MirrorIO } from "./mirror.ts";
 import { apiRetry } from "./tgretry.ts";
 import {
@@ -1598,12 +1592,20 @@ async function mirrorToTopic(
 // to insert the required blank line around every table before sending
 // (reproduced live: K crooked, K+blank-line M perfect). Any rich failure
 // (parse reject, caps, thread gone) falls back to the classic entity pipeline.
+//
+// Unlike a plain message (4096 cap), a rich message holds far more — Telegram
+// accepted 48 KB in a live probe. Gating the rich path at 4096 wrongly forced a
+// long report with a table down the classic pipeline, where a wide table became
+// stacked cards (live: greensms_sip, a 4145-char answer). The cap is now high
+// enough for any real report; a genuinely oversized one still rich-fails and
+// falls back to the split classic pipeline.
+const RICH_MESSAGE_MAX = 40_000;
 async function tryRichTable(
   topicId: number,
   md: string,
   reply_markup?: { inline_keyboard: { text: string; callback_data: string }[][] },
 ): Promise<number | undefined> {
-  if (md.length > TG_MESSAGE_LIMIT || !hasGfmTable(md)) return undefined;
+  if (md.length > RICH_MESSAGE_MAX || !hasGfmTable(md)) return undefined;
   try {
     const sent = await bot.api.sendRichMessage(
       GROUP_CHAT_ID,
