@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.20.13 — 2026-09-28
+
+- **Follower MCP servers no longer leak to multiple GB.** Live incident: the
+  per-session bun MCP servers grew to 5 GB over days while the leader (a
+  different loop) stayed ~150 MB — the leak was localized to the follower's
+  inbound loop, which long-polls the leader every ~25 s (tens of thousands of
+  requests over its lifetime). Two fixes:
+  - Every client fetch now uses a manually-cleared timeout (`fetchT`) instead of
+    `AbortSignal.timeout(ms)`, which left a live timer + signal pending until it
+    fired; across the endless poll loop bun accumulated those. The timer is now
+    cleared the instant the request settles.
+  - The watchdog forces a GC when the heap is elevated and, if RSS still exceeds
+    a high threshold afterwards (a genuine leak), restarts the process
+    gracefully — autostart respawns a fresh, small server on the next message.
+
 ## 0.20.12 — 2026-09-20
 
 - **Long reports with a table now render as a native table, not stacked cards.**

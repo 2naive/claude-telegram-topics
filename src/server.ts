@@ -175,6 +175,12 @@ let inboundRunning = false;
 let inboundGen = 0;
 let inboundBeat = Date.now();
 const INBOUND_STALL_MS = 120_000;
+// Memory hygiene thresholds (MB). Above GC_TRIGGER a forced GC runs each
+// watchdog tick to reclaim bun's lazily-held heap; if RSS still exceeds
+// RSS_RESTART afterwards it is a genuine leak (the follower poll loop grows over
+// days), so the process restarts gracefully and autostart respawns a fresh one.
+const GC_TRIGGER_MB = 400;
+const RSS_RESTART_MB = 1500;
 
 async function runInboundLoop(): Promise<void> {
   inboundRunning = true;
@@ -401,6 +407,23 @@ function startWatchdog(): void {
         clientLog("inbound.stopped", { error: String(e) });
         process.stderr.write(`telegram-topics: inbound loop stopped: ${e}\n`);
       });
+    }
+    // Memory hygiene: the follower poll loop leaks bun runtime state over days
+    // (live: servers grew to multiple GB). Force a GC when the heap is elevated;
+    // if RSS is still large afterwards it is a genuine leak, so restart the
+    // process — the graceful shutdown unregisters and autostart respawns a
+    // fresh, small server on the next message.
+    try {
+      if (process.memoryUsage().rss / 1048576 > GC_TRIGGER_MB) {
+        (globalThis as { Bun?: { gc?: (force: boolean) => void } }).Bun?.gc?.(true);
+        const rssMb = Math.round(process.memoryUsage().rss / 1048576);
+        if (pingArmed && rssMb > RSS_RESTART_MB) {
+          clientLog("mem.restart", { rssMb });
+          return shutdown(`rss ${rssMb}MB over ${RSS_RESTART_MB}MB`);
+        }
+      }
+    } catch {
+      // memoryUsage/Bun.gc unavailable — skip
     }
   }, 30_000);
   (t as { unref?: () => void }).unref?.();

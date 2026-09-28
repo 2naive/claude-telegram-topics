@@ -38,10 +38,28 @@ let leaderStarted = false;
 // "registration failed: HTTP 404"), or nothing (leader died mid-probe). A 200
 // with a non-JSON/unexpected body is still a foreign server, not "dead" — only
 // a failed request (connection refused / abort) means nothing is listening.
+// fetch with a MANUALLY-cleared timeout. Replaces `AbortSignal.timeout(ms)`,
+// which leaves a live timer + signal pending until it fires: harmless once, but
+// this client's inbound loop runs `poll()` every ~25 s for days (tens of
+// thousands of requests), and bun accumulates those timers/signals and their
+// keep-alive request state on the heap — the follower MCP servers grew to
+// multiple GB while the leader (a different loop) stayed ~150 MB (live
+// incident). Here the timer is cleared the instant the request settles, so
+// nothing lingers past the call.
+async function fetchT(url: string, ms: number, init?: RequestInit): Promise<Response> {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), ms);
+  try {
+    return await fetch(url, { ...init, signal: ac.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function probeLeader(): Promise<"leader" | "foreign" | "dead"> {
   let resp: Response;
   try {
-    resp = await fetch(`${BASE}/health`, { signal: AbortSignal.timeout(3000) });
+    resp = await fetchT(`${BASE}/health`, 3000);
   } catch {
     return "dead";
   }
@@ -117,7 +135,7 @@ async function register(honorHandoff = true): Promise<void> {
       "telegram-topics: project identity not resolved yet — deferring registration",
     );
   }
-  const resp = await fetch(`${BASE}/register`, {
+  const resp = await fetchT(`${BASE}/register`, CALL_TIMEOUT_MS, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -135,7 +153,6 @@ async function register(honorHandoff = true): Promise<void> {
       // resuming the same conversation. Empty while identity is warming.
       claudeSessionId: claudeSessionId() || undefined,
     }),
-    signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
   });
   if (!resp.ok) {
     // The leader could not create/resolve the topic — almost always a setup
@@ -263,11 +280,10 @@ async function call(
 
   let resp: Response;
   try {
-    resp = await fetch(`${BASE}${path}`, {
+    resp = await fetchT(`${BASE}${path}`, CALL_TIMEOUT_MS, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ sessionId, ...body }),
-      signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
     });
   } catch (e) {
     if (retried) throw e;
@@ -335,10 +351,10 @@ export async function askPermission(p: {
 export async function poll(timeoutSec = 25): Promise<Inbound[]> {
   await ensureRegistered();
   try {
-    const resp = await fetch(
+    // Allow headroom over the server-side long-poll window before aborting.
+    const resp = await fetchT(
       `${BASE}/poll?sessionId=${sessionId}&timeout=${timeoutSec}`,
-      // Allow headroom over the server-side long-poll window before aborting.
-      { signal: AbortSignal.timeout((timeoutSec + 10) * 1000) },
+      (timeoutSec + 10) * 1000,
     );
     if (resp.status === 404) {
       sessionId = null;
@@ -402,11 +418,10 @@ export function currentTopic(): number | null {
  */
 export function unregister(): void {
   if (!sessionId) return;
-  void fetch(`${BASE}/unregister`, {
+  void fetchT(`${BASE}/unregister`, 1000, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ sessionId }),
-    signal: AbortSignal.timeout(1000),
   }).catch(() => {});
   sessionId = null;
 }
