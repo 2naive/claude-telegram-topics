@@ -12,6 +12,7 @@ import {
   launchRoots,
   spawnSession,
   discoverLaunchable,
+  resolveClaudeBin,
 } from "../src/spawn.ts";
 import { normalizePath } from "../src/paths.ts";
 
@@ -184,6 +185,66 @@ describe("launchCommand", () => {
       if (prev === undefined) delete process.env.TG_TOPICS_LAUNCH_CMD;
       else process.env.TG_TOPICS_LAUNCH_CMD = prev;
     }
+  });
+});
+
+describe("resolveClaudeBin (absolute-path spawn, PATH-independent)", () => {
+  // A long-lived leader inherits a stale PATH: the npm-global -> native-installer
+  // migration moved claude to ~/.local/bin and emptied the old npm dir, so a
+  // pre-migration leader spawned consoles that died with "'claude' is not
+  // recognized". Resolving to an absolute path fixes this at the source.
+  const withEnv = (
+    over: Record<string, string | undefined>,
+    fn: () => void,
+  ) => {
+    const keys = Object.keys(over);
+    const prev: Record<string, string | undefined> = {};
+    for (const k of keys) prev[k] = process.env[k];
+    try {
+      for (const k of keys) {
+        const v = over[k];
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+      fn();
+    } finally {
+      for (const k of keys) {
+        if (prev[k] === undefined) delete process.env[k];
+        else process.env[k] = prev[k]!;
+      }
+    }
+  };
+
+  test("TG_TOPICS_CLAUDE_BIN (when it exists) becomes the leading absolute token", () => {
+    const dir = mkdtempSync(join(tmpdir(), "TgBin-"));
+    const bin = join(dir, "claude.exe");
+    writeFileSync(bin, "x");
+    try {
+      withEnv({ TG_TOPICS_CLAUDE_BIN: bin, TG_TOPICS_LAUNCH_CMD: undefined }, () => {
+        expect(resolveClaudeBin()).toBe(bin);
+        const cmd = launchCommand();
+        // leading token is the quoted absolute path, rest of DEFAULT preserved
+        expect(cmd.startsWith(`"${bin}" --permission-mode auto`)).toBe(true);
+        expect(cmd).toContain("--channels plugin:telegram-topics@");
+        // resume still inserts --continue before the variadic channels flag
+        expect(launchCommand(true)).toContain("--continue --channels");
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a nonexistent TG_TOPICS_CLAUDE_BIN is never returned", () => {
+    const missing = join(tmpdir(), "no-such-claude-binary.exe");
+    withEnv({ TG_TOPICS_CLAUDE_BIN: missing }, () => {
+      expect(resolveClaudeBin()).not.toBe(missing);
+    });
+  });
+
+  test("a custom TG_TOPICS_LAUNCH_CMD is trusted verbatim (never rewritten)", () => {
+    withEnv({ TG_TOPICS_LAUNCH_CMD: "claude --permission-mode auto --channels plugin:x@y" }, () => {
+      expect(launchCommand()).toBe("claude --permission-mode auto --channels plugin:x@y");
+    });
   });
 });
 

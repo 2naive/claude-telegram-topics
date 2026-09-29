@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.20.14 — 2026-09-29
+
+- **Spawned sessions resolve `claude` to an absolute path — no longer broken by
+  a stale inherited PATH.** Live incident: `/new` (and autostart) in a project
+  died with `'claude' is not recognized`. Cause: Claude Code migrated from the
+  npm-global install to the native installer, moving the binary to
+  `~/.local/bin/claude.exe` and emptying the old npm dir. The native installer
+  adds `~/.local/bin` to the *persistent* (registry) PATH, but the long-lived
+  leader carries an *in-memory* PATH inherited down its spawn chain from before
+  the migration — so every console it spawned pointed at the old, now-empty npm
+  dir and could not find `claude`. The default launch command named `claude`
+  bare, resolved via that stale PATH.
+  - New `resolveClaudeBin()` finds the binary by absolute path
+    (`TG_TOPICS_CLAUDE_BIN` override, then `~/.local/bin`, then npm-global) and
+    rewrites the leading `claude` token of the DEFAULT command to the quoted
+    absolute path, making the spawn immune to a stale or minimal PATH. A custom
+    `TG_TOPICS_LAUNCH_CMD` is trusted verbatim; if no known location exists the
+    bare `claude` token is kept (relies on PATH, exactly as before — no
+    regression). Activates once a leader running this version takes over
+    (launch a fresh `cct` from a normal terminal).
+
 ## 0.20.13 — 2026-09-28
 
 - **Follower MCP servers no longer leak to multiple GB.** Live incident: the

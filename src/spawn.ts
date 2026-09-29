@@ -9,7 +9,8 @@
 // after the leader exits. Other platforms have no reliable headless TTY story,
 // so spawning is refused with a clear message instead of half-working.
 
-import { readdirSync, realpathSync, statSync } from "node:fs";
+import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { log } from "./log.ts";
 import { normalizePath } from "./paths.ts";
@@ -21,6 +22,52 @@ import { normalizePath } from "./paths.ts";
 // TG_TOPICS_LAUNCH_CMD, but is no longer the default.
 export const DEFAULT_LAUNCH_CMD =
   "claude --permission-mode auto --channels plugin:telegram-topics@claude-telegram-topics";
+
+/**
+ * Absolute path to the claude binary, or null if none of the known locations
+ * exist. WHY: the DEFAULT command names `claude` bare, resolved via PATH at
+ * spawn time — but the leader is long-lived and spawns consoles that inherit
+ * ITS in-memory PATH, not a fresh one from the registry. When Claude Code
+ * migrated from the npm-global install to the native installer, `claude` moved
+ * to ~/.local/bin/claude.exe and the old npm dir was emptied; a leader whose
+ * PATH predated the move then spawned every console with "'claude' is not
+ * recognized" (live incident). Resolving to an absolute path makes the spawn
+ * immune to a stale or minimal inherited PATH. null → caller keeps the bare
+ * `claude` token and relies on PATH, exactly as before (no regression).
+ */
+export function resolveClaudeBin(): string | null {
+  const env = process.env.TG_TOPICS_CLAUDE_BIN?.trim();
+  if (env && existsSync(env)) return env;
+  const home = homedir();
+  const roaming = process.env.APPDATA || join(home, "AppData", "Roaming");
+  const candidates = [
+    join(home, ".local", "bin", "claude.exe"), // native installer, Windows
+    join(home, ".local", "bin", "claude"), // native installer, POSIX
+    join(roaming, "npm", "claude.cmd"), // npm-global, Windows
+    join(home, ".npm-global", "bin", "claude"), // npm-global, POSIX
+  ];
+  for (const c of candidates) {
+    try {
+      if (existsSync(c)) return c;
+    } catch {
+      /* unreadable candidate — try the next */
+    }
+  }
+  return null;
+}
+
+/**
+ * Rewrite a leading bare `claude` token to the resolved absolute path (double
+ * quoted for cmd.exe — the inner line starts with `title`, never a quote, so
+ * cmd's quote-stripping rule does not fire and the quotes reach the program
+ * name intact). Only the built-in DEFAULT command is rewritten; a custom
+ * TG_TOPICS_LAUNCH_CMD is trusted verbatim.
+ */
+function withClaudeBin(cmd: string): string {
+  const bin = resolveClaudeBin();
+  if (!bin) return cmd;
+  return cmd.replace(/^claude(?=\s|$)/, `"${bin}"`);
+}
 
 // Already selects a conversation? Then don't append our own --continue.
 const SELECTS_CONVERSATION = /(^|\s)(-c|--continue|-r|--resume)(\s|$)/;
@@ -43,7 +90,8 @@ const VARIADIC_CHANNELS_RE =
   /(^|\s)(--channels|--dangerously-load-development-channels)(\s|$)/;
 
 export function launchCommand(resume = false): string {
-  const base = process.env.TG_TOPICS_LAUNCH_CMD?.trim() || DEFAULT_LAUNCH_CMD;
+  const custom = process.env.TG_TOPICS_LAUNCH_CMD?.trim();
+  const base = custom || withClaudeBin(DEFAULT_LAUNCH_CMD);
   if (!resume || SELECTS_CONVERSATION.test(base)) return base;
   const m = VARIADIC_CHANNELS_RE.exec(base);
   if (m) {
