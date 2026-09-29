@@ -70,7 +70,7 @@ const isMarker = (ch: string | undefined): boolean =>
   ch === "*" || ch === "_" || ch === "~";
 // Chars a `_` run may sit right after — start, whitespace, an opening
 // bracket/quote/dash, or another marker (for stacking). Deliberately excludes
-// backslash and letters/digits so `C:\_naive_`, `App_Data` stay literal.
+// backslash and letters/digits so `C:\_temp_`, `App_Data` stay literal.
 const UNDERSCORE_LEFT = /[\s([{«"'—–-]/u;
 
 // Emoji / symbol / astral flanking. Models emit emoji-led emphasis constantly
@@ -103,7 +103,7 @@ const closesOnQuote = (ch: string | undefined): boolean =>
 // its content starts with a letter/digit, an emoji/symbol, or a nested marker.
 // `_` is stricter (paths and identifiers are full of underscores): its left
 // neighbour must be a boundary char, not merely a non-alnum. So `x**2`, `a_b`,
-// `2 * 3`, `*.log`, `**/dist`, `a[*]`, `C:\_naive_` stay literal, while
+// `2 * 3`, `*.log`, `**/dist`, `a[*]`, `C:\_temp_` stay literal, while
 // `**bold**`, `*it*`, `**_bolditalic_**`, `_x_` and `**✅ ok**` open.
 function opensAt(src: string, i: number, len: number, marker: string): boolean {
   const left = src[i - 1];
