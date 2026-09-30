@@ -15,11 +15,16 @@
 // must never delay or fail a turn.
 
 import { keyFromCwd } from "../src/projectkey.ts";
+import { optedOut } from "../src/optout.ts";
 import { resolvePort } from "./port.ts";
 
 const STATES = new Set(["start", "idle", "failed", "working"]);
 
 async function main(): Promise<void> {
+  // A run started with TG_TOPICS_DISABLE=1 (typically a headless `claude -p`)
+  // is off the bridge: its "start" would reset the turn state of a live
+  // session on the same project, and flip a badge that belongs to that session.
+  if (optedOut(process.env)) return;
   const arg = process.argv[2];
   const state = STATES.has(arg ?? "") ? arg! : "working";
   // CLAUDE_PROJECT_DIR is the session's project root; keyFromCwd resolves it to

@@ -15,6 +15,7 @@
 import { readFileSync } from "node:fs";
 import { keyFromCwd } from "../src/projectkey.ts";
 import { lastAssistantText } from "../src/transcript.ts";
+import { optedOut } from "../src/optout.ts";
 import { resolvePort } from "./port.ts";
 
 async function readStdin(): Promise<string> {
@@ -24,6 +25,12 @@ async function readStdin(): Promise<string> {
 }
 
 async function main(): Promise<void> {
+  // A run started with TG_TOPICS_DISABLE=1 (typically a headless `claude -p`)
+  // is off the bridge: /mirror is keyed by the project directory alone, so its
+  // one-shot answer would land in whatever topic that directory maps to — and
+  // a deleted topic would be recreated for it. Checked before any stdin or
+  // transcript read: an opted-out run costs nothing here.
+  if (optedOut(process.env)) return;
   const raw = await readStdin().catch(() => "");
   let input: { transcript_path?: string; cwd?: string; session_id?: string } = {};
   try {

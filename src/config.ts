@@ -8,6 +8,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { normalizePath } from "./paths.ts";
+import { OPT_OUT_ENV } from "./optout.ts";
 import pkg from "../package.json";
 
 // Single source of truth for the running code's version (package.json). Drives
@@ -79,6 +80,11 @@ export function envFromShell(key: string): boolean {
 // Load .env without a dependency; shell wins over file values.
 if (existsSync(ENV_FILE)) {
   for (const [key, val] of Object.entries(parseEnvFile(readFileSync(ENV_FILE, "utf8")))) {
+    // TG_TOPICS_DISABLE is per-run and environment-only (optout.ts). The .env
+    // is shared by every session, and whatever lands in process.env here is
+    // also inherited by the sessions a leader launches (spawnSession) — merged,
+    // it would silently switch those off too.
+    if (key === OPT_OUT_ENV) continue;
     if (!(key in process.env)) process.env[key] = val;
   }
 }

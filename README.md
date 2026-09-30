@@ -341,6 +341,15 @@ inbound messages into a queue the model never sees — so for day-to-day use,
 always launch with the flag; to turn the bridge fully off, disable the plugin
 (`/plugin`), not just the flag.
 
+To keep a **single run** off the bridge — typically a headless `claude -p` from
+cron or a script, which would otherwise register its working directory as a
+project, get a topic of its own and have its answer mirrored there — start it
+with `TG_TOPICS_DISABLE=1` in its environment (see [Settings](#settings)).
+Claude Code's own per-run switch,
+`--settings '{"enabledPlugins":{"telegram-topics@claude-telegram-topics":false}}'`,
+leaves the plugin out of that run altogether; the variable is handier when it
+should cover every `claude` that a crontab, a service or a script starts.
+
 ## Launch alias
 
 Wrap the launch in a shell alias so a single word opens a channel-enabled
@@ -392,6 +401,7 @@ All optional, set in the `.env` (or the environment):
 | `TG_TOPICS_AUTOSTART` | `1` = when a message arrives for a project with no live session, launch one automatically (Windows only) instead of offering a button. |
 | `TG_TOPICS_LAUNCH_ROOTS` | Semicolon-separated trusted directories under which `/start <path>` may launch a **brand-new** project (one not yet in `topics.json`). **Default-deny**: unset = launch-by-path disabled. Launching an arbitrary path named in a chat message is remote code-exec, so keep this confined to roots you trust (e.g. `C:\Users\you\code`). |
 | `TG_TOPICS_STATUS_ICONS` | Topic-name status badge (see [Liveness](#liveness)). On by default; set `0` to keep topic names unbadged. |
+| `TG_TOPICS_DISABLE` | `1` = keep **this run** off the bridge: no leader election, no registration, no topic, no tools, no mirrored answer, no activity pings. Meant for headless `claude -p` runs from cron jobs and scripts on a machine where the plugin is enabled. **Environment-only** — set it on that command (`TG_TOPICS_DISABLE=1 claude -p …`); a value in the `.env` is ignored, since the `.env` applies to every session (to switch the bridge off everywhere, disable the plugin). |
 
 **Environment variables take precedence over the `.env`.** If
 `TELEGRAM_BOT_TOKEN`, `TELEGRAM_GROUP_CHAT_ID` or `TELEGRAM_ALLOWED_USER_IDS`
