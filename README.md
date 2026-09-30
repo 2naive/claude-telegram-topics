@@ -169,7 +169,9 @@ Also:
   the bot and messages in the **General** topic are ignored (General still
   answers `/status`, `/list` and `/start`), as are messages from users outside
   the allowlist — silently, by design.
-- The session replies with tools, all scoped to this project's topic:
+- The session's answer is posted to the topic automatically at the end of each
+  turn (see **Auto-mirror** below); beyond that it has these tools, all scoped
+  to this project's topic:
 
 | Tool | Purpose |
 | --- | --- |
@@ -181,6 +183,17 @@ Also:
 - Telegram flood control (`429 retry_after`) and transient API failures are
   retried automatically with bounded backoff; a real outage surfaces as a tool
   error instead of hanging.
+
+**Auto-mirror.** When a turn ends, the `Stop` hook (`hooks/mirror.ts`) posts
+the last text the session wrote in that turn to the topic — only that last piece
+of text, not everything the console showed — whether the turn was started from
+Telegram or the terminal. It stands down for a turn in which the session called
+`send_message`, `send_file` or `edit_message` (those messages are then the whole
+reply, so nothing is posted twice); `react` does not count. A turn with no text
+at all posts nothing. This matters if a project's `CLAUDE.md` tells Claude not
+to answer some messages (say, a bare "thanks"): any text written in that turn —
+even a note to itself — lands in the topic, so the turn must contain no text at
+all (a reaction is fine). The channel instructions tell the model the same.
 
 **Asking a question.** Claude Code's built-in multiple-choice UI (the terminal
 quiz) is *not* bridged to channels — a Telegram-only user never sees it. To ask a

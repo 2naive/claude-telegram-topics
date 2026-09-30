@@ -91,3 +91,24 @@ test("whitespace-only final text returns '' (not the prior turn)", () => {
   const jsonl = [userPrompt("q1"), asst([text("REAL")]), userPrompt("q2"), asst([text("   ")])].join("\n");
   expect(lastAssistantText(jsonl)).toBe("");
 });
+
+// --- the contract the channel INSTRUCTIONS spell out for the model ---
+//
+// src/server.ts tells the model that the last text it wrote in a turn is posted
+// to the topic ("even an aside or a note to yourself"), so the way to not
+// reply is to write no text at all in that turn — a react being fine. The
+// no-text half is already pinned by "a turn that produced no text returns ''"
+// above; this pins the pitfall the wording warns about: a note written next to
+// the react is still the turn's text and gets mirrored. ("react does not count"
+// rests on the leader's /react handler not setting spokeThisTurn, which is not
+// unit-tested here.) If this changes, update INSTRUCTIONS and the README's
+// Auto-mirror paragraph.
+
+test("an aside written next to a react is still the turn's text — it gets mirrored", () => {
+  const jsonl = [
+    userPrompt("thanks"),
+    asst([text("No reply needed here."), tool("react")]),
+    toolResult(),
+  ].join("\n");
+  expect(lastAssistantText(jsonl)).toBe("No reply needed here.");
+});
