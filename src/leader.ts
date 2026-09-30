@@ -46,7 +46,9 @@ import {
   planRescue,
   pickMirrorOwner,
   partitionConsoles,
-  isServiceMessage,
+  messageDropReason,
+  messageDropLog,
+  type MessageDropReason,
   permCallbackData,
   sessionPrefix,
   startCallbackData,
@@ -666,6 +668,16 @@ function inGroup(chatId: unknown): boolean {
   return String(chatId) === String(GROUP_CHAT_ID);
 }
 
+// The message handler's counterpart of callback.drop: one leader.log line per
+// refused message, unless messageDropLog deems the refusal routine noise.
+function logMessageDrop(
+  reason: MessageDropReason,
+  m: { message_id: number; from?: { id: number } },
+): void {
+  const detail = messageDropLog(reason, m);
+  if (detail) log("message.drop", detail);
+}
+
 async function downloadFile(fileId: string, filename: string): Promise<string | null> {
   // Bounded: an unbounded fetch here blocks the single poller for ALL topics,
   // since grammy awaits each update's middleware sequentially.
@@ -1011,13 +1023,13 @@ function initBot(): void {
 
   bot.on("message", async (ctx) => {
     const m = ctx.message;
-    if (!inGroup(m.chat.id)) return;
-    // Service messages (a pin, a forum-topic event, a member change) carry no
-    // user prompt — never forward one as a turn (live: pinning in telebot woke
-    // the session with "[non-text message]").
-    if (isServiceMessage(m as unknown as Record<string, unknown>)) return;
-    if (m.from?.is_bot) return;
-    if (!isAllowedUser(m.from?.id)) return;
+    // Another chat, a service message, a bot, a sender off the allowlist —
+    // gate order and what each refusal logs live in routing.ts (tested).
+    const drop = messageDropReason(m, inGroup, isAllowedUser);
+    if (drop) {
+      logMessageDrop(drop, m);
+      return;
+    }
     const topicId = m.message_thread_id;
     // Leader-answered commands work everywhere, including the General topic.
     // `/status` and `/list` are intercepted only bare ("/status of the deploy"
@@ -1031,7 +1043,12 @@ function initBot(): void {
     ) {
       if (await handleCommand(t, topicId)) return;
     }
-    if (topicId === undefined) return; // General topic / non-topic messages ignored
+    if (topicId === undefined) {
+      // General topic / non-topic messages ignored — silently in Telegram, but
+      // logged, so a message posted to General by mistake is findable.
+      logMessageDrop("no-thread", m);
+      return;
+    }
     trackInbound(m.message_id, topicId);
 
     const from = m.from?.username ?? String(m.from?.id ?? "user");

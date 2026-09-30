@@ -484,7 +484,7 @@ hand-offs, routing decisions, drop reasons).
 | Send tools work, but messages from Telegram **never** arrive | Channel not allowlisted under `--channels` → `/telegram-topics:allowlist`, restart the session ([details](#launch-flags--the-channels-allowlist)). |
 | Messages from Telegram **stop** arriving, replies still go out | `leader.log` → `poller.died` with `409 Conflict` = another poller on this token (official plugin still **enabled**? claudet running elsewhere?). Re-election backs off 60 s on 409/401, so fix the cause, don't just restart. |
 | `registration failed: HTTP …` / port errors | Something else on port 8787 (wrangler dev?) — the client now names this; set `TG_TOPICS_PORT` in the `.env` for all sessions. |
-| Message posted, nothing happens, no typing | No live session → look for the `📴` notice / tap **▶️ Start session** / `/status`. Posted in General or as a DM? Those are ignored by design. Sender not on the allowlist? |
+| Message posted, nothing happens, no typing | No live session → look for the `📴` notice / tap **▶️ Start session** / `/status`. Posted in General or as a DM? Those are ignored by design. Sender not on the allowlist? `leader.log` → `message.drop` says which: `no-thread` (General), `chat` (a DM or another chat), `user` (not on the allowlist), `bot` (sent as a bot account); for `user`/`bot` the sender id is in `from`. |
 | Buttons answer "Request no longer available" | The leader restarted after the prompt was posted — re-run the tool call; the fresh prompt relays again. |
 | Token / group errors at setup | `/telegram-topics:configure` re-runs preflight with per-check verdicts (token, group reachable, forum, admin rights, free token, allowlist). |
 
