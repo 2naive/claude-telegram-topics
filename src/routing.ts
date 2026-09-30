@@ -325,3 +325,71 @@ export function partitionConsoles<C extends { startedAt: number | null }>(
   }
   return { booting, zombies };
 }
+
+/**
+ * Why the message handler refuses an inbound message. The first four are the
+ * up-front gates, in this order; "no-thread" (the General topic) is checked
+ * last because the leader-answered commands (/status, /list, /start, ...) are
+ * served from General too.
+ */
+export type MessageDropReason = "chat" | "service" | "bot" | "user" | "no-thread";
+
+/**
+ * The first up-front gate a message fails, or null when it passes them all.
+ * The chat and allowlist checks are injected so this stays pure; the order
+ * keeps the handler's short-circuit, so a message from another chat never
+ * consults the allowlist (which may re-read the .env). Pure.
+ */
+export function messageDropReason(
+  m: { chat: { id: number }; from?: { id: number; is_bot?: boolean } },
+  inGroup: (chatId: number) => boolean,
+  isAllowed: (userId: number | undefined) => boolean,
+): MessageDropReason | null {
+  if (!inGroup(m.chat.id)) return "chat";
+  // Service messages (a pin, a forum-topic event, a member change) carry no
+  // user prompt — never forward one as a turn (live: pinning in telebot woke
+  // the session with "[non-text message]").
+  if (isServiceMessage(m as unknown as Record<string, unknown>)) return "service";
+  if (m.from?.is_bot) return "bot";
+  if (!isAllowed(m.from?.id)) return "user";
+  return null;
+}
+
+/**
+ * The leader.log detail for a refused message (event "message.drop"), or null
+ * when the refusal is routine. Telegram stays silent either way (by design),
+ * but without a log line "I sent it and nothing happened" cannot be told apart
+ * from "Telegram never delivered it" — callback.drop already closes that gap
+ * for ordinary button taps.
+ *
+ * Logged: every refusal that could be somebody's would-be prompt. "chat",
+ * "user" and "no-thread" carry exactly the fields callback.drop records for
+ * the same reason; "bot" carries the sender id like "user" does — it should
+ * be rare, but a message sent on behalf of a chat (an anonymous admin's post)
+ * arrives with a placeholder sender user, which may well be a bot account, so
+ * a person's message could stop here. Metadata only — never the text, a
+ * caption or a file name.
+ *
+ * Quiet on purpose — "service": a status-badge rename (editForumTopic) makes
+ * Telegram post a forum-topic service message into the topic, and the bot
+ * receives it back, right after its own "badge" line. Logging that echo would
+ * add a line that says nothing new, roughly one per badge change. The service
+ * gate runs before the bot gate, so the echo lands here even though the bot
+ * sent it. Pins and member changes are not prompts either.
+ */
+export function messageDropLog(
+  reason: MessageDropReason,
+  m: { message_id: number; from?: { id: number } },
+): Record<string, unknown> | null {
+  switch (reason) {
+    case "chat":
+      return { reason };
+    case "bot":
+    case "user":
+      return { reason, from: String(m.from?.id ?? "") };
+    case "no-thread":
+      return { reason, mid: m.message_id };
+    case "service":
+      return null;
+  }
+}
