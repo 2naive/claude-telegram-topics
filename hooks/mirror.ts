@@ -8,13 +8,16 @@
 // this turn (send_message with buttons, a file, an edit), so interactive turns
 // are not double-posted — the model's own message stands.
 //
+// A turn whose whole answer is the `[quiet]` marker is not posted at all — the
+// model's explicit way to end a turn with nothing to report (isQuietMarker).
+//
 // CONTRACT: fire-and-forget. Reads the transcript, does one bounded localhost
 // POST (the leader sends to Telegram asynchronously), always exits 0 — it must
 // never delay or fail a turn.
 
 import { readFileSync } from "node:fs";
 import { keyFromCwd } from "../src/projectkey.ts";
-import { lastAssistantText } from "../src/transcript.ts";
+import { isQuietMarker, lastAssistantText } from "../src/transcript.ts";
 import { resolvePort } from "./port.ts";
 
 async function readStdin(): Promise<string> {
@@ -44,6 +47,10 @@ async function main(): Promise<void> {
     return; // transcript unreadable — skip silently
   }
   if (!text.trim()) return;
+  // Deliberately silent turn (the whole answer is `[quiet]`): skip the POST, as
+  // for an empty answer. Checked on the final text itself, whichever way it was
+  // obtained. The Stop `idle` ping already told the leader the turn ended.
+  if (isQuietMarker(text)) return;
 
   // Same project key the leader registered (git top-level), so the mirror lands
   // in the right topic even from a subdirectory cwd.
