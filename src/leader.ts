@@ -54,6 +54,7 @@ import {
   withStatusGlyph,
   statusGlyph,
   computeTopicStatus,
+  inboundStartsTurn,
   type TopicStatus,
   CONTROL_RESPONSE_HEADERS,
   LEADER_IDLE_TIMEOUT_SEC,
@@ -1073,8 +1074,18 @@ function initBot(): void {
       // (the Stop hook still returns it to ready). No-op if the topic is unmapped.
       const proj = projectForTopic(topicId);
       if (proj) {
-        spokeThisTurn.delete(proj); // new turn — the session hasn't spoken yet
-        lastMirrored.delete(proj);
+        // Per-turn mirror state resets here only if this message starts a turn
+        // now (session idle). Mid-turn, Claude Code merely queues it; it reaches
+        // the model later — inside the running turn at the next tool boundary,
+        // or as the next turn — and the `start` ping resets then (observed to
+        // fire for channel-injected prompts too, on Claude Code 2.1.278–2.1.287).
+        // Resetting here regardless landed inside the running turn: when that
+        // turn ended first, its Stop auto-mirror was un-skipped although the
+        // session had already answered via send_message.
+        if (inboundStartsTurn(activeWorking(proj))) {
+          spokeThisTurn.delete(proj); // new turn — the session hasn't spoken yet
+          lastMirrored.delete(proj);
+        }
         setActivity(proj, "working");
         checkHookless(proj, topicId); // warn if this session has no auto-mirror
       }
@@ -1403,8 +1414,10 @@ async function withRecovery<T>(
 // A session that sent its own outbound this turn (a send_message with buttons, a
 // file, an edit) has "spoken" — the Stop auto-mirror then skips, so an
 // interactive turn is not double-posted. Reset at each turn start: the
-// UserPromptSubmit "start" ping for a console turn, inbound routing for a
-// Telegram turn. Keyed by project (the mirror arrives keyed the same way).
+// UserPromptSubmit "start" ping, and inbound routing for a Telegram turn that
+// starts right away (session idle) — a mid-turn inbound is queued behind the
+// running turn and must not touch its state (inboundStartsTurn). Keyed by
+// project (the mirror arrives keyed the same way).
 const spokeThisTurn = new Set<string>();
 
 // Above this many chunks the mirror stops push-flooding the topic: it sends one
@@ -1737,7 +1750,10 @@ async function handle(req: Request): Promise<Response> {
       if (state === "failed") notifyTurnFailed(project);
       else if (state === "start") {
         // Turn boundary (UserPromptSubmit) — the session hasn't spoken yet, and
-        // a fresh answer may legitimately repeat the previous one.
+        // a fresh answer may legitimately repeat the previous one. Observed to
+        // fire for channel-injected prompts as well as console ones, including a
+        // message queued mid-turn, at the moment it reaches the model (Claude
+        // Code 2.1.278–2.1.287).
         spokeThisTurn.delete(project);
         lastMirrored.delete(project);
         setActivity(project, "working");
