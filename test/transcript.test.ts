@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { lastAssistantText } from "../src/transcript.ts";
+import { isQuietMarker, lastAssistantText } from "../src/transcript.ts";
 
 const line = (o: unknown) => JSON.stringify(o);
 const asst = (blocks: unknown[]) => line({ type: "assistant", message: { content: blocks } });
@@ -90,4 +90,42 @@ test("a tool_result user entry is not treated as a turn boundary", () => {
 test("whitespace-only final text returns '' (not the prior turn)", () => {
   const jsonl = [userPrompt("q1"), asst([text("REAL")]), userPrompt("q2"), asst([text("   ")])].join("\n");
   expect(lastAssistantText(jsonl)).toBe("");
+});
+
+// --- the `[quiet]` marker: a turn that deliberately posts nothing ---
+//
+// The mirror hook skips a turn whose whole answer is the marker, so a scheduled
+// check with nothing to report can end its turn without pushing "no changes"
+// to the topic. Exact match only — the marker next to other text is an answer.
+
+test("isQuietMarker: the marker alone, in any case and padding, is quiet", () => {
+  expect(isQuietMarker("[quiet]")).toBe(true);
+  expect(isQuietMarker("[QUIET]")).toBe(true);
+  expect(isQuietMarker("  [Quiet]\n")).toBe(true);
+});
+
+test("isQuietMarker: the marker with anything else around it is an answer", () => {
+  expect(isQuietMarker("[quiet] and more")).toBe(false);
+  expect(isQuietMarker("All good. [quiet]")).toBe(false);
+  expect(isQuietMarker("[quiet].")).toBe(false);
+  expect(isQuietMarker("quiet")).toBe(false);
+});
+
+test("isQuietMarker: empty and whitespace-only text is not the marker (the hook skips it anyway)", () => {
+  expect(isQuietMarker("")).toBe(false);
+  expect(isQuietMarker("   ")).toBe(false);
+});
+
+test("a turn that ends on the marker extracts as the marker, so the hook stays quiet", () => {
+  const jsonl = [
+    userPrompt("q1"),
+    asst([text("ANSWER ONE")]),
+    userPrompt("check again"),
+    asst([text("Checking."), tool("Bash")]),
+    toolResult(),
+    asst([text("[quiet]")]),
+  ].join("\n");
+  const t = lastAssistantText(jsonl);
+  expect(t).toBe("[quiet]");
+  expect(isQuietMarker(t)).toBe(true);
 });

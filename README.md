@@ -182,6 +182,15 @@ Also:
   retried automatically with bounded backoff; a real outage surfaces as a tool
   error instead of hanging.
 
+**Staying quiet.** The last text the session writes in a turn is posted to the
+topic automatically by the `Stop` hook (`hooks/mirror.ts`), unless the session
+already replied with `send_message`, `send_file` or `edit_message` in that turn.
+A turn whose entire final text is `[quiet]` (case and surrounding whitespace
+don't matter) posts nothing — for turns with nothing to report, such as a
+scheduled check that found no change. The marker still shows in the console, and
+`[quiet]` followed by anything else is a normal answer. The channel instructions
+tell the model this.
+
 **Asking a question.** Claude Code's built-in multiple-choice UI (the terminal
 quiz) is *not* bridged to channels — a Telegram-only user never sees it. To ask a
 choice question remotely, call `send_message` with `options`: each label becomes

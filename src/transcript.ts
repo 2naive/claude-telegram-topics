@@ -65,3 +65,16 @@ export function lastAssistantText(jsonl: string): string {
   }
   return "";
 }
+
+// The model's explicit "post nothing": a turn whose ENTIRE answer is this
+// marker is deliberately silent and the mirror hook does not post it.
+// The auto-mirror posts the last text of every turn, so a turn with nothing to
+// report — a scheduled check that found no change, a background-task
+// notification — would otherwise push "no changes" to the phone each time.
+// The marker still shows in the console. Exact match only (case and
+// surrounding whitespace aside): "[quiet] and more" is an answer.
+const QUIET_MARKER = "[quiet]";
+
+export function isQuietMarker(text: string): boolean {
+  return text.trim().toLowerCase() === QUIET_MARKER;
+}
