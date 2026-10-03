@@ -325,3 +325,147 @@ export function partitionConsoles<C extends { startedAt: number | null }>(
   }
   return { booting, zombies };
 }
+
+// --- Inbound attachments ---
+
+/** A media duration, compact: `12s`, `3m05s`, `1h02m03s`. Anything that is
+ * not a number reads as 0. */
+export function formatDuration(seconds: number): string {
+  const total = Math.max(0, Math.round(Number(seconds) || 0));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  if (h > 0) return `${h}h${pad(m)}m${pad(s)}s`;
+  if (m > 0) return `${m}m${pad(s)}s`;
+  return `${s}s`;
+}
+
+// Extension for a downloaded media file, from the MIME type Telegram reports
+// (a voice note is `audio/ogg`; music and video carry whatever was uploaded).
+// Unknown or absent → the kind's default.
+const MIME_EXT: Record<string, string> = {
+  "audio/ogg": "ogg",
+  "audio/mpeg": "mp3",
+  "audio/mp4": "m4a",
+  "audio/x-m4a": "m4a",
+  "audio/aac": "aac",
+  "audio/wav": "wav",
+  "audio/x-wav": "wav",
+  "audio/flac": "flac",
+  "video/mp4": "mp4",
+  "video/quicktime": "mov",
+  "video/webm": "webm",
+  "video/x-matroska": "mkv",
+};
+function mediaExt(mime: string | undefined, fallback: string): string {
+  const key = (mime ?? "").replace(/;.*$/, "").trim().toLowerCase();
+  return MIME_EXT[key] ?? fallback;
+}
+
+/** The message fields the attachment picker reads — a structural subset of
+ * grammy's `Message`, so tests can pass plain objects. */
+export type AttachmentMessage = {
+  caption?: string;
+  document?: { file_id: string; file_name?: string };
+  photo?: { file_id: string }[];
+  voice?: { file_id: string; duration: number; mime_type?: string };
+  audio?: {
+    file_id: string;
+    duration: number;
+    file_name?: string;
+    title?: string;
+    mime_type?: string;
+  };
+  video?: { file_id: string; duration: number; file_name?: string; mime_type?: string };
+  video_note?: { file_id: string; duration: number };
+};
+
+export type InboundAttachment = {
+  kind: "document" | "photo" | "voice" | "audio" | "video" | "video_note";
+  /** Telegram file id to download. */
+  fileId: string;
+  /** Name to save the download under (the downloader sanitizes and prefixes it). */
+  filename: string;
+  /** What the session reads: a bracketed label plus the caption, e.g.
+   * `[voice 12s] call me back`. The leader appends ` saved:<path>` once the
+   * download succeeds (withSavedPath). */
+  text: string;
+};
+
+/**
+ * The one downloadable attachment of a Telegram message (a message carries at
+ * most one), or null for plain text and for media the bridge does not download
+ * (a sticker, a contact, a poll…) — those keep the `[non-text message]`
+ * placeholder. Documents and photos keep their labels verbatim; a voice note,
+ * an audio file, a video or a video note gets a label with its duration, since
+ * the session cannot tell a 5 s note from a 40 min recording by the path.
+ * Pure.
+ */
+export function inboundAttachment(m: AttachmentMessage): InboundAttachment | null {
+  const caption = m.caption ?? "";
+  if (m.document) {
+    const name = m.document.file_name ?? "file";
+    return {
+      kind: "document",
+      fileId: m.document.file_id,
+      filename: name,
+      text: `[file: ${name}]${caption ? " " + caption : ""}`,
+    };
+  }
+  if (m.photo?.length) {
+    // Telegram lists sizes ascending — the last one is the largest.
+    const largest = m.photo[m.photo.length - 1]!;
+    return {
+      kind: "photo",
+      fileId: largest.file_id,
+      filename: "photo.jpg",
+      text: `[photo]${caption ? ": " + caption : ""}`,
+    };
+  }
+  const tail = caption ? " " + caption : "";
+  if (m.voice) {
+    return {
+      kind: "voice",
+      fileId: m.voice.file_id,
+      filename: `voice.${mediaExt(m.voice.mime_type, "ogg")}`,
+      text: `[voice ${formatDuration(m.voice.duration)}]${tail}`,
+    };
+  }
+  if (m.audio) {
+    const name = m.audio.file_name ?? m.audio.title;
+    const dur = formatDuration(m.audio.duration);
+    return {
+      kind: "audio",
+      fileId: m.audio.file_id,
+      filename: m.audio.file_name ?? `audio.${mediaExt(m.audio.mime_type, "mp3")}`,
+      text: `[audio${name ? `: ${name}, ` : " "}${dur}]${tail}`,
+    };
+  }
+  if (m.video) {
+    const name = m.video.file_name;
+    const dur = formatDuration(m.video.duration);
+    return {
+      kind: "video",
+      fileId: m.video.file_id,
+      filename: name ?? `video.${mediaExt(m.video.mime_type, "mp4")}`,
+      text: `[video${name ? `: ${name}, ` : " "}${dur}]${tail}`,
+    };
+  }
+  if (m.video_note) {
+    return {
+      kind: "video_note",
+      fileId: m.video_note.file_id,
+      filename: "video_note.mp4",
+      text: `[video note ${formatDuration(m.video_note.duration)}]${tail}`,
+    };
+  }
+  return null;
+}
+
+/** Appends the local path the session should open. A failed, oversized or
+ * slow download (downloadFile → null) leaves the label alone, so the message
+ * still says what arrived — the contract documents and photos already had. */
+export function withSavedPath(text: string, path: string | null): string {
+  return path ? `${text} saved:${path}` : text;
+}

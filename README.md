@@ -163,8 +163,12 @@ Also:
 
 - Messages you send to a project's topic arrive in that project's session
   automatically as `<channel source="telegram-topics" …>` tags. If you attach a
-  file, its downloaded local path appears in the message as `saved:<path>`
-  (kept 24 h — see [State files](#state-files)).
+  file, a photo, a voice message, an audio file, a video or a video note, it is
+  downloaded and its local path appears in the message as `saved:<path>`
+  (kept 24 h — see [State files](#state-files)). Media labels carry the
+  duration — `[voice 12s]`, `[audio: track.mp3, 3m05s]`, `[video note 8s]` — and
+  a voice message arrives as the audio file only: transcribing it is up to the
+  session (for example with a local speech-to-text tool run on that path).
 - The bot only listens inside the configured forum group's **topics**: DMs to
   the bot and messages in the **General** topic are ignored (General still
   answers `/status`, `/list` and `/start`), as are messages from users outside
@@ -409,7 +413,7 @@ Everything lives in `~/.claude/channels/telegram-topics/`:
 | `topics.json` | project → topic map | Yes, but projects get **new** topics (old ones stay in the group) |
 | `sent.json` | reply/button/reaction routing for recent messages | Yes; replies and taps on older messages stop routing to their exact session |
 | `leader.log`(.1) | leader diagnostics (JSONL, 1 MB rotation) | Yes |
-| `inbox/` | files you attach in Telegram, downloaded locally | Deleted after **24 h** while the bridge is running — copy anything you need to keep. Downloads are capped at 20 MB / 15 s; an oversized or slow attachment arrives as a message with **no** `saved:` path. |
+| `inbox/` | files and media you attach in Telegram (documents, photos, voice, audio, video), downloaded locally | Deleted after **24 h** while the bridge is running — copy anything you need to keep. Downloads are capped at 20 MB / 15 s; an oversized or slow attachment arrives as a message with **no** `saved:` path. |
 
 ## Getting the bot token and group id
 
