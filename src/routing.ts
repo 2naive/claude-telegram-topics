@@ -136,6 +136,17 @@ export function computeTopicStatus(x: {
 }
 
 /**
+ * Whether an inbound Telegram message starts a turn right away, so the leader
+ * resets its per-turn mirror state (the "spoke this turn" flag and the last
+ * mirrored text) at routing. Only while the session is idle: mid-turn the
+ * message is queued, and the UserPromptSubmit `start` ping resets when it
+ * reaches the model — see the inbound handler in leader.ts. Pure.
+ */
+export function inboundStartsTurn(sessionWorking: boolean): boolean {
+  return !sessionWorking;
+}
+
+/**
  * A per-pid session record Claude Code writes to <config>/sessions/*.json — the
  * only place the harness exposes a session's `/rename` name and its real cwd.
  */

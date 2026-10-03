@@ -16,6 +16,7 @@ import {
   stripStatusGlyph,
   withStatusGlyph,
   computeTopicStatus,
+  inboundStartsTurn,
 } from "../src/routing.ts";
 
 describe("topic status glyphs", () => {
@@ -73,6 +74,18 @@ describe("computeTopicStatus precedence", () => {
     ).toBe("attention");
     // attention also needs a session (the prompt belongs to one)
     expect(computeTopicStatus({ ...base, attention: true })).toBe("offline");
+  });
+});
+
+describe("inboundStartsTurn (per-turn mirror state reset at routing)", () => {
+  test("an inbound message to an idle session starts a turn right away", () => {
+    expect(inboundStartsTurn(false)).toBe(true);
+  });
+  test("an inbound message mid-turn is only queued — the running turn keeps its state", () => {
+    // Resetting here un-skipped the Stop auto-mirror of a turn that had already
+    // answered via send_message: the console wrap-up was posted as a second
+    // message. The start ping fires when the queued message reaches the model.
+    expect(inboundStartsTurn(true)).toBe(false);
   });
 });
 
