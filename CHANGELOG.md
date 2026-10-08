@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.20.15 — 2026-10-08
+
+- **Auto-mirror no longer silently drops a large final answer (PR #6, devvesna).**
+  Live incident: crm and health sent a table / an analysis as plain console
+  text, the turn ended, and nothing reached the topic. Cause: the `Stop` hook
+  read the final answer from the transcript (JSONL), but on a large answer `Stop`
+  can fire before that entry is flushed — `lastAssistantText` then returned
+  empty (nothing mirrored) or an in-turn narration instead of the answer. The
+  hook now prefers the Stop payload's `last_assistant_message` (built from the
+  in-memory conversation, independent of the transcript write) and falls back to
+  the transcript only when the field is absent, non-string or blank. Adds
+  `finalAnswerText` (transcript.ts) with tests for the race, the fallback and
+  trimming; the leader's `/mirror` handler is unchanged.
+
 ## 0.20.14 — 2026-09-29
 
 - **Spawned sessions resolve `claude` to an absolute path — no longer broken by
