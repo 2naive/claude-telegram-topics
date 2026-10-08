@@ -8,13 +8,15 @@
 // this turn (send_message with buttons, a file, an edit), so interactive turns
 // are not double-posted — the model's own message stands.
 //
-// CONTRACT: fire-and-forget. Reads the transcript, does one bounded localhost
-// POST (the leader sends to Telegram asynchronously), always exits 0 — it must
-// never delay or fail a turn.
+// CONTRACT: fire-and-forget. Takes the answer from the Stop payload (or, when
+// the payload has none — an older Claude Code, or a turn whose last message has
+// no text — from the transcript), does one bounded localhost POST (the leader
+// sends to Telegram asynchronously), always exits 0 — it must never delay or
+// fail a turn.
 
 import { readFileSync } from "node:fs";
 import { keyFromCwd } from "../src/projectkey.ts";
-import { lastAssistantText } from "../src/transcript.ts";
+import { finalAnswerText } from "../src/transcript.ts";
 import { optedOut } from "../src/optout.ts";
 import { resolvePort } from "./port.ts";
 
@@ -32,7 +34,12 @@ async function main(): Promise<void> {
   // transcript read: an opted-out run costs nothing here.
   if (optedOut(process.env)) return;
   const raw = await readStdin().catch(() => "");
-  let input: { transcript_path?: string; cwd?: string; session_id?: string } = {};
+  let input: {
+    transcript_path?: string;
+    cwd?: string;
+    session_id?: string;
+    last_assistant_message?: unknown;
+  } = {};
   try {
     input = JSON.parse(raw);
   } catch {
@@ -43,10 +50,12 @@ async function main(): Promise<void> {
 
   let text = "";
   try {
-    // Whole-file read: transcripts are JSONL and typically small; a very long
+    // Prefer the payload's last_assistant_message: the transcript may not hold
+    // the final entry yet when Stop fires (see finalAnswerText). The fallback is
+    // a whole-file read: transcripts are JSONL and typically small; a very long
     // session could make this heavier, but it stays well within the 5s hook
     // budget. lastAssistantText walks from the end, so only the tail is parsed.
-    text = lastAssistantText(readFileSync(transcriptPath, "utf8"));
+    text = finalAnswerText(input.last_assistant_message, () => readFileSync(transcriptPath, "utf8"));
   } catch {
     return; // transcript unreadable — skip silently
   }
