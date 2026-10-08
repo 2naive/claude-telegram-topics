@@ -469,3 +469,94 @@ export function inboundAttachment(m: AttachmentMessage): InboundAttachment | nul
 export function withSavedPath(text: string, path: string | null): string {
   return path ? `${text} saved:${path}` : text;
 }
+
+// --- Incoming native rich messages (Bot API 10.2) ---
+//
+// A forwarded rich message — anything the bot sent via sendRichMessage, e.g. a
+// table — arrives with its content in `message.rich_message.blocks`, NOT in
+// `message.text`. The handler read only text/caption, so such a forward became
+// `[non-text message]` with no content (live incident: a forwarded analysis was
+// lost, and the session then read other topics' files hunting for it). This
+// flattens the block tree to plain text so the session gets the words — not a
+// faithful re-render, but the headings, paragraphs, list items and table cells.
+// Defensive and structural (walks unknown shapes, never throws, "" on junk) so
+// an unforeseen block type can never break inbound.
+
+/** Flatten a RichText node (string | array | a {text}/leaf object) to a string. */
+export function richTextToString(rt: unknown): string {
+  if (rt == null) return "";
+  if (typeof rt === "string") return rt;
+  if (Array.isArray(rt)) return rt.map(richTextToString).join("");
+  if (typeof rt === "object") {
+    const o = rt as Record<string, unknown>;
+    if (o.text != null) return richTextToString(o.text); // bold/italic/url/… wrap text
+    if (typeof o.alternative_text === "string") return o.alternative_text; // custom emoji
+    if (typeof o.expression === "string") return o.expression; // inline math
+  }
+  return "";
+}
+
+function richBlockToText(b: unknown): string {
+  if (b == null || typeof b !== "object") return "";
+  const o = b as Record<string, unknown>;
+  const type = o.type;
+  if (type === "divider") return "---";
+  if (type === "table") {
+    const rows = Array.isArray(o.cells) ? o.cells : [];
+    const body = rows
+      .map((row) =>
+        (Array.isArray(row) ? row : [])
+          .map((cell) => {
+            const c = cell as Record<string, unknown> | null;
+            return c && c.text != null ? richTextToString(c.text) : "";
+          })
+          .join(" | "),
+      )
+      .join("\n");
+    const cap = o.caption != null ? richTextToString(o.caption) : ""; // table caption is RichText
+    return cap ? `${body}\n${cap}` : body;
+  }
+  if (type === "list") {
+    const items = Array.isArray(o.items) ? o.items : [];
+    return items
+      .map((it) => {
+        const i = (it ?? {}) as Record<string, unknown>;
+        const label = typeof i.label === "string" && i.label ? `${i.label} ` : "";
+        return (label + richBlocksToText(i.blocks)).trim();
+      })
+      .filter(Boolean)
+      .join("\n");
+  }
+  if (type === "details") {
+    return [richTextToString(o.summary), richBlocksToText(o.blocks)].filter(Boolean).join("\n");
+  }
+  if (Array.isArray(o.blocks)) {
+    // blockquote / collage / slideshow: nested blocks, caption is a {text} object
+    const body = richBlocksToText(o.blocks);
+    const capObj = o.caption as Record<string, unknown> | undefined;
+    const cap = capObj && typeof capObj === "object" ? richTextToString(capObj.text) : "";
+    return cap ? `${body}\n${cap}` : body;
+  }
+  if (o.text != null) return richTextToString(o.text); // paragraph/heading/pre/footer/pullquote
+  if (o.caption && typeof o.caption === "object") {
+    // media block (photo/video/audio/…): only its caption carries words
+    return richTextToString((o.caption as Record<string, unknown>).text);
+  }
+  if (typeof o.expression === "string") return o.expression; // math block
+  return "";
+}
+
+function richBlocksToText(blocks: unknown): string {
+  if (!Array.isArray(blocks)) return "";
+  return blocks
+    .map(richBlockToText)
+    .filter((s) => s.trim())
+    .join("\n\n");
+}
+
+/** Plain-text rendering of an incoming rich message's blocks, or "" when there
+ * is nothing readable. Accepts the raw `message.rich_message`. */
+export function richMessageToText(rich: unknown): string {
+  if (rich == null || typeof rich !== "object") return "";
+  return richBlocksToText((rich as Record<string, unknown>).blocks).trim();
+}

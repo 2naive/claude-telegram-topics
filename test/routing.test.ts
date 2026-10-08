@@ -8,6 +8,8 @@ import {
   inboundAttachment,
   formatDuration,
   withSavedPath,
+  richMessageToText,
+  richTextToString,
   type AttachmentMessage,
   parseCallback,
   permCallbackData,
@@ -577,5 +579,99 @@ describe("withSavedPath (what the session reads after the download)", () => {
       "[audio: track.mp3, 3m05s] listen",
     );
     expect(withSavedPath("[file: report.pdf]", null)).toBe("[file: report.pdf]");
+  });
+});
+
+describe("richTextToString (flatten a RichText node)", () => {
+  test("plain string, array, and formatting wrappers", () => {
+    expect(richTextToString("hello")).toBe("hello");
+    expect(richTextToString(["a", "b", "c"])).toBe("abc");
+    expect(richTextToString({ type: "bold", text: "B" })).toBe("B");
+    expect(
+      richTextToString(["pre ", { type: "italic", text: ["nested ", { type: "bold", text: "X" }] }]),
+    ).toBe("pre nested X");
+  });
+
+  test("leaf nodes: url keeps its text, custom emoji its alt, math its expression", () => {
+    expect(richTextToString({ type: "url", text: "site", url: "https://t.me" })).toBe("site");
+    expect(
+      richTextToString({ type: "custom_emoji", custom_emoji_id: "1", alternative_text: "👍" }),
+    ).toBe("👍");
+    expect(richTextToString({ type: "mathematical_expression", expression: "E=mc^2" })).toBe("E=mc^2");
+  });
+
+  test("null / junk is the empty string, never a throw", () => {
+    expect(richTextToString(null)).toBe("");
+    expect(richTextToString(undefined)).toBe("");
+    expect(richTextToString(42)).toBe("");
+    expect(richTextToString({ type: "divider" })).toBe("");
+  });
+});
+
+describe("richMessageToText (incoming native rich message → plain text)", () => {
+  test("headings and paragraphs join with blank lines", () => {
+    const rich = {
+      blocks: [
+        { type: "heading", text: "Verdict" },
+        { type: "paragraph", text: ["Prescription ", { type: "bold", text: "OK" }, "."] },
+      ],
+    };
+    expect(richMessageToText(rich)).toBe("Verdict\n\nPrescription OK.");
+  });
+
+  test("a table flattens to pipe-joined rows (+ caption)", () => {
+    const rich = {
+      blocks: [
+        {
+          type: "table",
+          cells: [
+            [{ text: "Eye", is_header: true }, { text: "Value", is_header: true }],
+            [{ text: "R" }, { text: "+4.25" }],
+            [{ text: "L" }, { text: [{ type: "bold", text: "+5.00" }] }],
+          ],
+          caption: "cyclo",
+        },
+      ],
+    };
+    expect(richMessageToText(rich)).toBe("Eye | Value\nR | +4.25\nL | +5.00\ncyclo");
+  });
+
+  test("lists keep their labels and nested block content", () => {
+    const rich = {
+      blocks: [
+        {
+          type: "list",
+          items: [
+            { label: "1.", blocks: [{ type: "paragraph", text: "first" }] },
+            { label: "2.", blocks: [{ type: "paragraph", text: "second" }] },
+          ],
+        },
+      ],
+    };
+    expect(richMessageToText(rich)).toBe("1. first\n2. second");
+  });
+
+  test("details summary + body, blockquote nesting, and media captions", () => {
+    expect(
+      richMessageToText({
+        blocks: [{ type: "details", summary: "More", blocks: [{ type: "paragraph", text: "body" }] }],
+      }),
+    ).toBe("More\nbody");
+    expect(
+      richMessageToText({
+        blocks: [{ type: "blockquote", blocks: [{ type: "paragraph", text: "quoted" }] }],
+      }),
+    ).toBe("quoted");
+    expect(
+      richMessageToText({ blocks: [{ type: "photo", caption: { text: "a caption" } }] }),
+    ).toBe("a caption");
+  });
+
+  test("empty / junk / no blocks yields an empty string (→ handler keeps [non-text message])", () => {
+    expect(richMessageToText(null)).toBe("");
+    expect(richMessageToText(undefined)).toBe("");
+    expect(richMessageToText({})).toBe("");
+    expect(richMessageToText({ blocks: [] })).toBe("");
+    expect(richMessageToText({ blocks: [{ type: "divider" }, { type: "unknown_future" }] })).toBe("---");
   });
 });

@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.20.18 — 2026-10-09
+
+- **Forwarded native rich messages are now readable (the content, not
+  `[non-text message]`).** A rich message — anything the bot sent via
+  `sendRichMessage`, e.g. a table — arrives with its content in
+  `message.rich_message.blocks` (Bot API 10.2), NOT in `message.text`, so a
+  forward of one reached the session as `[non-text message]` with nothing in it
+  (and the model then hunted the inbox and read other topics' files). The
+  handler now flattens `rich_message.blocks` to plain text when there is no
+  `message.text` — headings, paragraphs, list items, table cells (pipe-joined),
+  details/blockquote nesting and media captions. `richMessageToText` is pure,
+  structural (walks unknown shapes, never throws) and tested; the `inbound.notext`
+  diagnostic still fires only when a text-less message has no rich content
+  either. The exact field was confirmed from the grammy 3.28 types, not guessed.
+
 ## 0.20.17 — 2026-10-09
 
 - **Inbox is now isolated per topic — fixes a cross-topic file read.** Live

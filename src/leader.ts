@@ -52,6 +52,7 @@ import {
   startCallbackData,
   truncate,
   withSavedPath,
+  richMessageToText,
   withStatusGlyph,
   statusGlyph,
   computeTopicStatus,
@@ -1053,15 +1054,25 @@ function initBot(): void {
       const p = await downloadFile(attachment.fileId, attachment.filename, topicId);
       text = withSavedPath(attachment.text, p);
     } else if (!text) {
-      text = "[non-text message]";
-      // Diagnostic: a message with no text/caption and no recognized attachment
-      // — e.g. a forwarded RICH message (a native table), whose content is NOT
-      // in m.text. Log the top-level field KEYS only (never values) so the next
-      // such message reveals where the content lives, with nothing leaked.
-      log("inbound.notext", {
-        mid: m.message_id,
-        keys: Object.keys(m as unknown as Record<string, unknown>).slice(0, 40),
-      });
+      // A forwarded/native rich message keeps its content in rich_message.blocks,
+      // not m.text (Bot API 10.2). Flatten it so the session gets the words
+      // instead of a blank — otherwise it may go hunting for a file that is not
+      // there (the cross-topic read incident).
+      const rich = richMessageToText(
+        (m as unknown as { rich_message?: unknown }).rich_message,
+      );
+      if (rich) {
+        text = rich;
+      } else {
+        text = "[non-text message]";
+        // Still nothing readable: log the top-level field KEYS only (never
+        // values) so an unforeseen text-less message reveals where its content
+        // lives, with nothing leaked.
+        log("inbound.notext", {
+          mid: m.message_id,
+          keys: Object.keys(m as unknown as Record<string, unknown>).slice(0, 40),
+        });
+      }
     }
 
     const inbound: Inbound = {
