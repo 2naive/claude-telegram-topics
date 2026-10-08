@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { lastAssistantText } from "../src/transcript.ts";
+import { finalAnswerText, lastAssistantText } from "../src/transcript.ts";
 
 const line = (o: unknown) => JSON.stringify(o);
 const asst = (blocks: unknown[]) => line({ type: "assistant", message: { content: blocks } });
@@ -111,4 +111,79 @@ test("an aside written next to a react is still the turn's text — it gets mirr
     toolResult(),
   ].join("\n");
   expect(lastAssistantText(jsonl)).toBe("No reply needed here.");
+});
+
+// --- Stop payload first (last_assistant_message): no dependence on the transcript write ---
+
+// A reader that records whether the transcript was touched.
+function reader(jsonl: string) {
+  let reads = 0;
+  return {
+    read: (): string => {
+      reads++;
+      return jsonl;
+    },
+    get reads() {
+      return reads;
+    },
+  };
+}
+
+test("prefers the Stop payload's last_assistant_message and skips the transcript", () => {
+  const r = reader(asst([text("FROM TRANSCRIPT")]));
+  expect(finalAnswerText("From the payload.", r.read)).toBe("From the payload.");
+  expect(r.reads).toBe(0);
+});
+
+test("payload wins over a transcript that has not caught up yet (the race)", () => {
+  // Stop fired before the final entry hit the JSONL: the tail still ends at an
+  // in-turn narration + tool call, so the transcript alone would mirror that.
+  const stale = [userPrompt("q"), asst([text("Let me check."), tool("Read")]), toolResult()].join("\n");
+  expect(lastAssistantText(stale)).toBe("Let me check.");
+  expect(finalAnswerText("The real answer.", reader(stale).read)).toBe("The real answer.");
+  // ...and with nothing of this turn on disk yet it would mirror nothing at all.
+  const empty = [userPrompt("q1"), asst([text("OLD")]), userPrompt("q2")].join("\n");
+  expect(finalAnswerText("NEW", reader(empty).read)).toBe("NEW");
+});
+
+test("missing field falls back to the transcript (older Claude Code)", () => {
+  const r = reader([userPrompt("q"), asst([text("Transcript answer.")])].join("\n"));
+  expect(finalAnswerText(undefined, r.read)).toBe("Transcript answer.");
+  expect(r.reads).toBe(1);
+});
+
+test("field omitted on a text-less final message: fallback stays turn-bounded", () => {
+  // Claude Code leaves the field out when the last assistant message has no
+  // text (tool-only / thinking-only). The fallback must still not reach back
+  // into the previous turn — the 0.10.1 guarantee holds on this path too.
+  const jsonl = [
+    userPrompt("q1"),
+    asst([text("PREVIOUS ANSWER")]),
+    userPrompt("q2"),
+    asst([tool("Bash")]),
+  ].join("\n");
+  expect(finalAnswerText(undefined, reader(jsonl).read)).toBe("");
+});
+
+test("blank or non-string field falls back to the transcript", () => {
+  const jsonl = asst([text("Transcript answer.")]);
+  for (const v of ["", "  \n ", null, 42, { text: "x" }, ["x"]]) {
+    expect(finalAnswerText(v, reader(jsonl).read)).toBe("Transcript answer.");
+  }
+});
+
+test("payload text is trimmed like the transcript path (stable for the leader's de-dupe)", () => {
+  expect(finalAnswerText("\n  Answer.  \n", reader("").read)).toBe("Answer.");
+});
+
+test("no field and nothing in the transcript yields empty string (mirror nothing)", () => {
+  expect(finalAnswerText(undefined, reader("").read)).toBe("");
+});
+
+test("a transcript read error surfaces to the caller only on the fallback path", () => {
+  const boom = () => {
+    throw new Error("ENOENT");
+  };
+  expect(finalAnswerText("Answer.", boom)).toBe("Answer.");
+  expect(() => finalAnswerText(undefined, boom)).toThrow("ENOENT");
 });
