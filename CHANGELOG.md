@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.20.16 — 2026-10-09
+
+- **Inbound-loop observability so a deaf-but-looping session is diagnosable.**
+  The MCP server's stderr is not persisted, so a session that keeps polling a
+  leader that no longer delivers to it (and the heartbeat watchdog can't see,
+  because a re-registering loop still beats) left no trace — the class behind
+  several "topic went quiet" reports. The client now records registration
+  transitions to `client.log`: `inbound.registered` on every (re-)registration
+  (rare in steady state; a burst is the fingerprint of a flapping registration)
+  and `inbound.reregister` when a poll clears the session (`poll-404` = leader
+  forgot us, `poll-error` = leader unreachable). Re-register logging is throttled
+  to one line per ~10 s so a sustained outage cannot spam the sink.
+- **`client.log` is now size-bounded** (one-deep rotation at 1 MB, identical to
+  `leader.log`) — it previously appended without limit, so the new transition
+  logging could not let it grow unbounded. Purely additive: no new timers, no
+  new permissions, same state dir; a logging failure still never touches the
+  inbound loop. Observability only — no behavior change to registration, polling
+  or delivery.
+
 ## 0.20.15 — 2026-10-08
 
 - **Auto-mirror no longer silently drops a large final answer (PR #6, devvesna).**
