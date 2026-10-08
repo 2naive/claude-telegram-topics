@@ -12,11 +12,10 @@ import {
   mkdirSync,
   writeFileSync,
   readFileSync,
-  readdirSync,
   statSync,
-  unlinkSync,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { inboxSubdir, reapInbox } from "./inbox.ts";
 import {
   BOT_TOKEN,
   GROUP_CHAT_ID,
@@ -668,7 +667,11 @@ function inGroup(chatId: unknown): boolean {
   return String(chatId) === String(GROUP_CHAT_ID);
 }
 
-async function downloadFile(fileId: string, filename: string): Promise<string | null> {
+async function downloadFile(
+  fileId: string,
+  filename: string,
+  topicId: number,
+): Promise<string | null> {
   // Bounded: an unbounded fetch here blocks the single poller for ALL topics,
   // since grammy awaits each update's middleware sequentially.
   const ac = new AbortController();
@@ -684,7 +687,10 @@ async function downloadFile(fileId: string, filename: string): Promise<string | 
     const buf = Buffer.from(await resp.arrayBuffer());
     // Unicode-aware: \w would collapse any non-ASCII (e.g. Cyrillic) name to "_".
     const safe = filename.replace(/[^\p{L}\p{N}.\-]+/gu, "_");
-    const path = join(INBOX_DIR, `${fileId}_${safe}`);
+    // Per-topic subdir (inbox.ts): a session is only handed `saved:` paths under
+    // its own topic's folder, so another topic's attachments are not sitting
+    // next to the one file it was told to open (cross-topic read incident).
+    const path = join(inboxSubdir(INBOX_DIR, topicId), `${fileId}_${safe}`);
     writeFileSync(path, buf);
     return path;
   } catch {
@@ -1044,10 +1050,18 @@ function initBot(): void {
     // session as its label plus `saved:<path>`; other media keep the placeholder.
     const attachment = inboundAttachment(m);
     if (attachment) {
-      const p = await downloadFile(attachment.fileId, attachment.filename);
+      const p = await downloadFile(attachment.fileId, attachment.filename, topicId);
       text = withSavedPath(attachment.text, p);
     } else if (!text) {
       text = "[non-text message]";
+      // Diagnostic: a message with no text/caption and no recognized attachment
+      // — e.g. a forwarded RICH message (a native table), whose content is NOT
+      // in m.text. Log the top-level field KEYS only (never values) so the next
+      // such message reveals where the content lives, with nothing leaked.
+      log("inbound.notext", {
+        mid: m.message_id,
+        keys: Object.keys(m as unknown as Record<string, unknown>).slice(0, 40),
+      });
     }
 
     const inbound: Inbound = {
@@ -2250,14 +2264,8 @@ export async function tryBecomeLeader(): Promise<boolean> {
         }
       }
     }
-    try {
-      for (const name of readdirSync(INBOX_DIR)) {
-        const fp = join(INBOX_DIR, name);
-        if (now - statSync(fp).mtimeMs > 24 * 3600 * 1000) unlinkSync(fp);
-      }
-    } catch {
-      // best-effort cleanup
-    }
+    // Per-topic subdirs + any legacy flat files; each entry guarded inside.
+    reapInbox(INBOX_DIR, now, 24 * 3600 * 1000);
   }, REAPER_INTERVAL_MS);
 
   steppingDown = false;

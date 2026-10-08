@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.20.17 — 2026-10-09
+
+- **Inbox is now isolated per topic — fixes a cross-topic file read.** Live
+  incident: a forwarded rich message (a native table) reached the `compare`
+  session as `[non-text message]` with no `saved:` path; its model then browsed
+  the single shared inbox dir and read files belonging to OTHER topics — the
+  `system` screenshot and a `health` photo (confirmed from its transcript). Two
+  changes close this:
+  - Attachments now download into a per-topic subdir (`inbox/<topicId>/`), so a
+    session is only ever handed `saved:` paths inside its own topic's folder
+    (`src/inbox.ts`, with a size-bounded, per-entry-guarded reaper that also
+    cleans legacy flat files). 
+  - The channel instructions now tell the model to Read ONLY the exact `saved:`
+    path, never list the inbox or hunt for an attachment that has no path — no
+    `saved:` means no readable file arrived, so ask the user to resend.
+- **Diagnostic for text-less messages.** When a message has no text/caption and
+  no recognized attachment (e.g. a forwarded rich message, whose content is not
+  in `m.text`), the leader logs `inbound.notext` with the message's top-level
+  field KEYS only (never values) — enough to find where the content lives next
+  time without leaking it.
+- **Download voice, audio, video and video notes (PR #10, devvesna).** Media
+  beyond documents and photos is now fetched into the inbox with a duration
+  label; a voice note arrives as the audio file for the session to transcribe.
+  Each still goes through the existing bounded download (20 MB / 15 s).
+
 ## 0.20.16 — 2026-10-09
 
 - **Inbound-loop observability so a deaf-but-looping session is diagnosable.**
