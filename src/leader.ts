@@ -47,10 +47,12 @@ import {
   pickMirrorOwner,
   partitionConsoles,
   isServiceMessage,
+  inboundAttachment,
   permCallbackData,
   sessionPrefix,
   startCallbackData,
   truncate,
+  withSavedPath,
   withStatusGlyph,
   statusGlyph,
   computeTopicStatus,
@@ -1037,15 +1039,13 @@ function initBot(): void {
     const from = m.from?.username ?? String(m.from?.id ?? "user");
     let text = m.text ?? m.caption ?? "";
 
-    if (m.document) {
-      const p = await downloadFile(m.document.file_id, m.document.file_name ?? "file");
-      text = `[file: ${m.document.file_name ?? "file"}]${text ? " " + text : ""}`;
-      if (p) text += ` saved:${p}`;
-    } else if (m.photo?.length) {
-      const largest = m.photo[m.photo.length - 1]!;
-      const p = await downloadFile(largest.file_id, "photo.jpg");
-      text = `[photo]${text ? ": " + text : ""}`;
-      if (p) text += ` saved:${p}`;
+    // A document, photo, voice note, audio file, video or video note is
+    // downloaded into the inbox (bounded — see downloadFile) and reaches the
+    // session as its label plus `saved:<path>`; other media keep the placeholder.
+    const attachment = inboundAttachment(m);
+    if (attachment) {
+      const p = await downloadFile(attachment.fileId, attachment.filename);
+      text = withSavedPath(attachment.text, p);
     } else if (!text) {
       text = "[non-text message]";
     }
