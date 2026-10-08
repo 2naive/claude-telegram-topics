@@ -1493,7 +1493,7 @@ function notifyMirrorGap(topicId: number, sent: number, total: number): void {
 }
 
 // Auto-mirror: post a session's final answer to its topic verbatim — the Stop
-// hook (mirror.ts) extracts the transcript's last assistant message and sends it
+// hook (mirror.ts) extracts the turn's last assistant message and sends it
 // here. No session-label prefix: this is the console text 1:1. Because manual
 // duplication is OFF, this is the ONLY phone copy, so a failure must be VISIBLE
 // (a cooldown-guarded ⚠️ notice), the tail must not be dropped on a mid-stream
@@ -1747,7 +1747,7 @@ async function handle(req: Request): Promise<Response> {
   }
 
   // Auto-mirror the turn's final answer, sent by the Stop hook (mirror.ts) with
-  // the transcript's last assistant message. Skipped when the session already
+  // the turn's last assistant message. Skipped when the session already
   // spoke this turn (buttons/file/edit) so interactive turns aren't doubled.
   // Keyed by project, no sessionId — sits above the sid guard like /activity.
   if (path === "/mirror" && req.method === "POST") {
