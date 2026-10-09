@@ -65,3 +65,36 @@ export function lastAssistantText(jsonl: string): string {
   }
   return "";
 }
+
+// The text the Stop hook should mirror. Claude Code (2.1.47+) passes the final
+// answer IN the Stop payload as `last_assistant_message` — the text blocks of
+// the last in-memory assistant message, trimmed; omitted when there is none. It
+// is built from the in-memory conversation, not from the JSONL, so it does not
+// depend on the transcript write (the hooks reference recommends it over
+// transcript_path for exactly this): at the moment Stop fires the JSONL may not
+// yet hold the turn's final entry, and the walk-back above then returns "" (the
+// answer is silently not mirrored) or, in a turn with tool calls, an earlier
+// in-turn narration ("Let me check…") instead of the answer. Using the payload
+// also spares reading a long transcript on every turn.
+//
+// Unlike lastAssistantText, Claude Code does not bound the field to the current
+// turn: it is the last assistant message of the whole conversation. That keeps
+// the 0.10.1 guarantee only because, as far as we can tell from its (minified)
+// source, every Stop follows at least one assistant message of the current
+// turn, and a text-less one (tool-only, thinking-only) omits the field, which
+// falls back to the turn-bounded lastAssistantText. A user interrupt does not
+// fire Stop at all, and API errors fire StopFailure (per the hooks reference).
+// A successful response with no content blocks at all was not verified.
+//
+// Falls back to the transcript when the field is missing (an older Claude Code,
+// or a last message without text), not a string, or blank — exactly the
+// previous behaviour. The reader is lazy so the file is not touched when the
+// payload already carries the answer; a reader error propagates to the caller
+// (the hook skips silently, as before). Trimmed like lastAssistantText, so both
+// paths hand the leader the same shape of text (its lastMirrored de-dupe
+// compares byte-for-byte).
+export function finalAnswerText(lastAssistantMessage: unknown, readTranscript: () => string): string {
+  const direct = typeof lastAssistantMessage === "string" ? lastAssistantMessage.trim() : "";
+  if (direct) return direct;
+  return lastAssistantText(readTranscript());
+}

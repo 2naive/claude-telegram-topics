@@ -12,11 +12,10 @@ import {
   mkdirSync,
   writeFileSync,
   readFileSync,
-  readdirSync,
   statSync,
-  unlinkSync,
 } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { inboxSubdir, reapInbox } from "./inbox.ts";
 import {
   BOT_TOKEN,
   GROUP_CHAT_ID,
@@ -47,10 +46,13 @@ import {
   pickMirrorOwner,
   partitionConsoles,
   isServiceMessage,
+  inboundAttachment,
   permCallbackData,
   sessionPrefix,
   startCallbackData,
   truncate,
+  withSavedPath,
+  richMessageToText,
   withStatusGlyph,
   statusGlyph,
   computeTopicStatus,
@@ -666,7 +668,11 @@ function inGroup(chatId: unknown): boolean {
   return String(chatId) === String(GROUP_CHAT_ID);
 }
 
-async function downloadFile(fileId: string, filename: string): Promise<string | null> {
+async function downloadFile(
+  fileId: string,
+  filename: string,
+  topicId: number,
+): Promise<string | null> {
   // Bounded: an unbounded fetch here blocks the single poller for ALL topics,
   // since grammy awaits each update's middleware sequentially.
   const ac = new AbortController();
@@ -682,7 +688,10 @@ async function downloadFile(fileId: string, filename: string): Promise<string | 
     const buf = Buffer.from(await resp.arrayBuffer());
     // Unicode-aware: \w would collapse any non-ASCII (e.g. Cyrillic) name to "_".
     const safe = filename.replace(/[^\p{L}\p{N}.\-]+/gu, "_");
-    const path = join(INBOX_DIR, `${fileId}_${safe}`);
+    // Per-topic subdir (inbox.ts): a session is only handed `saved:` paths under
+    // its own topic's folder, so another topic's attachments are not sitting
+    // next to the one file it was told to open (cross-topic read incident).
+    const path = join(inboxSubdir(INBOX_DIR, topicId), `${fileId}_${safe}`);
     writeFileSync(path, buf);
     return path;
   } catch {
@@ -1037,17 +1046,33 @@ function initBot(): void {
     const from = m.from?.username ?? String(m.from?.id ?? "user");
     let text = m.text ?? m.caption ?? "";
 
-    if (m.document) {
-      const p = await downloadFile(m.document.file_id, m.document.file_name ?? "file");
-      text = `[file: ${m.document.file_name ?? "file"}]${text ? " " + text : ""}`;
-      if (p) text += ` saved:${p}`;
-    } else if (m.photo?.length) {
-      const largest = m.photo[m.photo.length - 1]!;
-      const p = await downloadFile(largest.file_id, "photo.jpg");
-      text = `[photo]${text ? ": " + text : ""}`;
-      if (p) text += ` saved:${p}`;
+    // A document, photo, voice note, audio file, video or video note is
+    // downloaded into the inbox (bounded — see downloadFile) and reaches the
+    // session as its label plus `saved:<path>`; other media keep the placeholder.
+    const attachment = inboundAttachment(m);
+    if (attachment) {
+      const p = await downloadFile(attachment.fileId, attachment.filename, topicId);
+      text = withSavedPath(attachment.text, p);
     } else if (!text) {
-      text = "[non-text message]";
+      // A forwarded/native rich message keeps its content in rich_message.blocks,
+      // not m.text (Bot API 10.2). Flatten it so the session gets the words
+      // instead of a blank — otherwise it may go hunting for a file that is not
+      // there (the cross-topic read incident).
+      const rich = richMessageToText(
+        (m as unknown as { rich_message?: unknown }).rich_message,
+      );
+      if (rich) {
+        text = rich;
+      } else {
+        text = "[non-text message]";
+        // Still nothing readable: log the top-level field KEYS only (never
+        // values) so an unforeseen text-less message reveals where its content
+        // lives, with nothing leaked.
+        log("inbound.notext", {
+          mid: m.message_id,
+          keys: Object.keys(m as unknown as Record<string, unknown>).slice(0, 40),
+        });
+      }
     }
 
     const inbound: Inbound = {
@@ -1493,7 +1518,7 @@ function notifyMirrorGap(topicId: number, sent: number, total: number): void {
 }
 
 // Auto-mirror: post a session's final answer to its topic verbatim — the Stop
-// hook (mirror.ts) extracts the transcript's last assistant message and sends it
+// hook (mirror.ts) extracts the turn's last assistant message and sends it
 // here. No session-label prefix: this is the console text 1:1. Because manual
 // duplication is OFF, this is the ONLY phone copy, so a failure must be VISIBLE
 // (a cooldown-guarded ⚠️ notice), the tail must not be dropped on a mid-stream
@@ -1747,7 +1772,7 @@ async function handle(req: Request): Promise<Response> {
   }
 
   // Auto-mirror the turn's final answer, sent by the Stop hook (mirror.ts) with
-  // the transcript's last assistant message. Skipped when the session already
+  // the turn's last assistant message. Skipped when the session already
   // spoke this turn (buttons/file/edit) so interactive turns aren't doubled.
   // Keyed by project, no sessionId — sits above the sid guard like /activity.
   if (path === "/mirror" && req.method === "POST") {
@@ -2250,14 +2275,8 @@ export async function tryBecomeLeader(): Promise<boolean> {
         }
       }
     }
-    try {
-      for (const name of readdirSync(INBOX_DIR)) {
-        const fp = join(INBOX_DIR, name);
-        if (now - statSync(fp).mtimeMs > 24 * 3600 * 1000) unlinkSync(fp);
-      }
-    } catch {
-      // best-effort cleanup
-    }
+    // Per-topic subdirs + any legacy flat files; each entry guarded inside.
+    reapInbox(INBOX_DIR, now, 24 * 3600 * 1000);
   }, REAPER_INTERVAL_MS);
 
   steppingDown = false;
