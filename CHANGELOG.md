@@ -1,5 +1,64 @@
 # Changelog
 
+## 0.20.18 — 2026-10-09
+
+- **Forwarded native rich messages are now readable (the content, not
+  `[non-text message]`).** A rich message — anything the bot sent via
+  `sendRichMessage`, e.g. a table — arrives with its content in
+  `message.rich_message.blocks` (Bot API 10.2), NOT in `message.text`, so a
+  forward of one reached the session as `[non-text message]` with nothing in it
+  (and the model then hunted the inbox and read other topics' files). The
+  handler now flattens `rich_message.blocks` to plain text when there is no
+  `message.text` — headings, paragraphs, list items, table cells (pipe-joined),
+  details/blockquote nesting and media captions. `richMessageToText` is pure,
+  structural (walks unknown shapes, never throws) and tested; the `inbound.notext`
+  diagnostic still fires only when a text-less message has no rich content
+  either. The exact field was confirmed from the grammy 3.28 types, not guessed.
+
+## 0.20.17 — 2026-10-09
+
+- **Inbox is now isolated per topic — fixes a cross-topic file read.** Live
+  incident: a forwarded rich message (a native table) reached the `compare`
+  session as `[non-text message]` with no `saved:` path; its model then browsed
+  the single shared inbox dir and read files belonging to OTHER topics — the
+  `system` screenshot and a `health` photo (confirmed from its transcript). Two
+  changes close this:
+  - Attachments now download into a per-topic subdir (`inbox/<topicId>/`), so a
+    session is only ever handed `saved:` paths inside its own topic's folder
+    (`src/inbox.ts`, with a size-bounded, per-entry-guarded reaper that also
+    cleans legacy flat files). 
+  - The channel instructions now tell the model to Read ONLY the exact `saved:`
+    path, never list the inbox or hunt for an attachment that has no path — no
+    `saved:` means no readable file arrived, so ask the user to resend.
+- **Diagnostic for text-less messages.** When a message has no text/caption and
+  no recognized attachment (e.g. a forwarded rich message, whose content is not
+  in `m.text`), the leader logs `inbound.notext` with the message's top-level
+  field KEYS only (never values) — enough to find where the content lives next
+  time without leaking it.
+- **Download voice, audio, video and video notes (PR #10, devvesna).** Media
+  beyond documents and photos is now fetched into the inbox with a duration
+  label; a voice note arrives as the audio file for the session to transcribe.
+  Each still goes through the existing bounded download (20 MB / 15 s).
+
+## 0.20.16 — 2026-10-09
+
+- **Inbound-loop observability so a deaf-but-looping session is diagnosable.**
+  The MCP server's stderr is not persisted, so a session that keeps polling a
+  leader that no longer delivers to it (and the heartbeat watchdog can't see,
+  because a re-registering loop still beats) left no trace — the class behind
+  several "topic went quiet" reports. The client now records registration
+  transitions to `client.log`: `inbound.registered` on every (re-)registration
+  (rare in steady state; a burst is the fingerprint of a flapping registration)
+  and `inbound.reregister` when a poll clears the session (`poll-404` = leader
+  forgot us, `poll-error` = leader unreachable). Re-register logging is throttled
+  to one line per ~10 s so a sustained outage cannot spam the sink.
+- **`client.log` is now size-bounded** (one-deep rotation at 1 MB, identical to
+  `leader.log`) — it previously appended without limit, so the new transition
+  logging could not let it grow unbounded. Purely additive: no new timers, no
+  new permissions, same state dir; a logging failure still never touches the
+  inbound loop. Observability only — no behavior change to registration, polling
+  or delivery.
+
 ## 0.20.15 — 2026-10-08
 
 - **Auto-mirror no longer silently drops a large final answer (PR #6, devvesna).**
