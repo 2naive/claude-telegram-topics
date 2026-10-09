@@ -11,7 +11,7 @@
 
 import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { log } from "./log.ts";
 import { normalizePath } from "./paths.ts";
 
@@ -67,6 +67,54 @@ function withClaudeBin(cmd: string): string {
   const bin = resolveClaudeBin();
   if (!bin) return cmd;
   return cmd.replace(/^claude(?=\s|$)/, `"${bin}"`);
+}
+
+/**
+ * Directory that holds the `bun` shim, or null. WHY: the plugin's MCP server is
+ * started with the bare command `bun` (.mcp.json), resolved via the spawned
+ * console's PATH. An autostart console inherits the long-lived leader's
+ * in-memory PATH, which can lack bun's dir — the MCP server then dies at launch
+ * with "'bun' is not recognized", the channel never connects, and inbound is
+ * silently lost (live incident: telebot). Prepending this dir to the console's
+ * PATH fixes it — the same stale-PATH class the absolute `claude` path
+ * (resolveClaudeBin) already closed for the launch command itself.
+ */
+export function resolveBunDir(): string | null {
+  const hasBun = (dir: string): boolean => {
+    try {
+      return (
+        existsSync(join(dir, "bun.exe")) ||
+        existsSync(join(dir, "bun.cmd")) ||
+        existsSync(join(dir, "bun"))
+      );
+    } catch {
+      return false;
+    }
+  };
+  const env = process.env.TG_TOPICS_BUN_DIR?.trim();
+  if (env && hasBun(env)) return env;
+  const home = homedir();
+  const roaming = process.env.APPDATA || join(home, "AppData", "Roaming");
+  for (const dir of [join(roaming, "npm"), join(home, ".bun", "bin")]) {
+    if (hasBun(dir)) return dir;
+  }
+  return null;
+}
+
+/**
+ * `;`-joined dirs to prepend to a spawned console's PATH so its bare-command
+ * launches resolve regardless of the leader's stale PATH: bun's dir (for the MCP
+ * server) and claude's dir (belt-and-braces; the launch line already uses
+ * claude's absolute path). Empty when neither resolves — then the spawn keeps
+ * the inherited PATH exactly as before (no regression).
+ */
+export function launchPathPrefix(): string {
+  const dirs: string[] = [];
+  const bun = resolveBunDir();
+  if (bun) dirs.push(bun);
+  const claudeBin = resolveClaudeBin();
+  if (claudeBin) dirs.push(dirname(claudeBin));
+  return [...new Set(dirs)].join(";");
 }
 
 // Already selects a conversation? Then don't append our own --continue.
@@ -166,8 +214,19 @@ export function psQuote(s: string): string {
  * All embedded values are PS single-quoted (psQuote); windowTitle is already
  * restricted to [A-Za-z0-9_-].
  */
-export function buildLaunchPs(title: string, cmd: string, cwd: string): string {
-  const inner = `title ${title} & ${cmd}`;
+export function buildLaunchPs(
+  title: string,
+  cmd: string,
+  cwd: string,
+  pathPrefix = "",
+): string {
+  // Prepend bun's / claude's dir to the console PATH so the MCP server's bare
+  // `bun` resolves even when the inherited leader PATH is stale (launchPathPrefix).
+  // cmd.exe `set "PATH=…"` quotes the value; %PATH% expands at runtime. The inner
+  // starts with `set`/`title`, never a quote, so cmd's quote-stripping rule does
+  // not fire and the embedded quotes survive.
+  const pre = pathPrefix ? `set "PATH=${pathPrefix};%PATH%" & ` : "";
+  const inner = `${pre}title ${title} & ${cmd}`;
   return (
     `Start-Process -FilePath cmd.exe -ArgumentList '/k',${psQuote(inner)} ` +
     `-WorkingDirectory ${psQuote(cwd)}`
@@ -273,7 +332,12 @@ export function spawnSession(
   }
   const cmd = launchCommand(resume);
   try {
-    const line = buildLaunchPs(windowTitle(name), cmd, canonicalCwd(projectPath));
+    const line = buildLaunchPs(
+      windowTitle(name),
+      cmd,
+      canonicalCwd(projectPath),
+      launchPathPrefix(),
+    );
     // NOTE: no windowsVerbatimArguments here — PowerShell parses MSVCRT-style
     // quoting, so Bun's DEFAULT encoding is correct for it (the 0.12.2 verbatim
     // lesson applies only when composing a line for cmd.exe, which this spawn

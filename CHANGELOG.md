@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.20.19 — 2026-10-09
+
+- **Autostart consoles no longer die with "'bun' is not recognized".** Live
+  incident: a message to `telebot` autostarted a console whose telegram-topics
+  MCP server failed to launch — the server starts via the bare command `bun`
+  (`.mcp.json`), resolved on the console's PATH, but an autostart console
+  inherits the long-lived leader's in-memory PATH, which lacked bun's dir. The
+  server never connected, the channel stayed dead, and both inbound messages
+  were silently lost. Same stale-PATH class the absolute `claude` path
+  (`resolveClaudeBin`, 0.20.14) closed for the launch command — now closed for
+  `bun` too: the spawn prepends bun's dir (and claude's) to the console's PATH
+  (`set "PATH=…;%PATH%"`), via new `resolveBunDir` / `launchPathPrefix`. Falls
+  back to the inherited PATH untouched when neither resolves (no regression).
+  `TG_TOPICS_BUN_DIR` overrides. Applies to leader-spawned (autostart / Start
+  session) consoles; manually launched sessions were never affected.
+
 ## 0.20.18 — 2026-10-09
 
 - **Forwarded native rich messages are now readable (the content, not
