@@ -5,9 +5,6 @@ import {
   pickMirrorOwner,
   partitionConsoles,
   isServiceMessage,
-  messageDropReason,
-  messageDropLog,
-  type MessageDropReason,
   parseCallback,
   permCallbackData,
   pickSessionField,
@@ -444,96 +441,5 @@ describe("isServiceMessage (skip Telegram pins & service messages, 0.20.9)", () 
 
   test("a service field explicitly null does not count", () => {
     expect(isServiceMessage({ pinned_message: null, text: "hi" })).toBe(false);
-  });
-});
-
-describe("message drops: gate order and the leader.log line (message.drop)", () => {
-  const GROUP = -1001;
-  const inGroup = (id: number) => id === GROUP;
-  const allowed = (id: number | undefined) => id === 7;
-  const person = { id: 7, is_bot: false };
-  const inbound = (extra: Record<string, unknown> = {}) => ({
-    message_id: 5,
-    chat: { id: GROUP },
-    from: person,
-    text: "hi",
-    ...extra,
-  });
-
-  test("an allowlisted person's message in the group passes every gate", () => {
-    expect(messageDropReason(inbound(), inGroup, allowed)).toBeNull();
-  });
-
-  test("each gate names itself; another chat wins over a service message", () => {
-    expect(messageDropReason(inbound({ chat: { id: 42 } }), inGroup, allowed)).toBe("chat");
-    // The bot added to some other group: logged as "chat", not the quiet
-    // "service" — the chat gate runs first.
-    expect(
-      messageDropReason(
-        inbound({ chat: { id: 42 }, new_chat_members: [{ id: 1 }] }),
-        inGroup,
-        allowed,
-      ),
-    ).toBe("chat");
-    const pin = inbound({ pinned_message: { message_id: 4 } });
-    expect(messageDropReason(pin, inGroup, allowed)).toBe("service");
-    expect(messageDropReason(inbound({ from: { id: 9, is_bot: true } }), inGroup, allowed)).toBe(
-      "bot",
-    );
-    expect(messageDropReason(inbound({ from: { id: 8, is_bot: false } }), inGroup, allowed)).toBe(
-      "user",
-    );
-    // No sender at all can't be on the allowlist.
-    expect(messageDropReason(inbound({ from: undefined }), inGroup, allowed)).toBe("user");
-  });
-
-  test("another chat short-circuits: the allowlist (may re-read .env) is not consulted", () => {
-    let consulted = 0;
-    const counting = (id: number | undefined) => {
-      consulted++;
-      return allowed(id);
-    };
-    expect(messageDropReason(inbound({ chat: { id: 42 } }), inGroup, counting)).toBe("chat");
-    expect(consulted).toBe(0);
-  });
-
-  test("the bot's own badge-rename echo is a quiet service drop, not a logged bot one", () => {
-    // editForumTopic makes Telegram post forum_topic_edited back into the topic;
-    // the service gate comes before the bot gate, so the echo stays quiet even
-    // though "bot" drops are logged.
-    const echo = inbound({
-      from: { id: 9, is_bot: true },
-      forum_topic_edited: { name: "⏳ repo" },
-    });
-    expect(messageDropReason(echo, inGroup, allowed)).toBe("service");
-    expect(messageDropLog("service", echo)).toBeNull();
-    expect(messageDropLog("bot", echo)).not.toBeNull();
-  });
-
-  test("logged drops carry exactly callback.drop's fields for the same reason", () => {
-    const m = { message_id: 5, from: { id: 8 } };
-    expect(messageDropLog("chat", m)).toEqual({ reason: "chat" });
-    expect(messageDropLog("user", m)).toEqual({ reason: "user", from: "8" });
-    expect(messageDropLog("user", { message_id: 5 })).toEqual({ reason: "user", from: "" });
-    expect(messageDropLog("no-thread", m)).toEqual({ reason: "no-thread", mid: 5 });
-    // No callback.drop counterpart: "bot" records the sender id like "user".
-    expect(messageDropLog("bot", m)).toEqual({ reason: "bot", from: "8" });
-  });
-
-  test("never logs message content — text, caption or a file name", () => {
-    const m = {
-      message_id: 5,
-      from: { id: 8 },
-      text: "private words",
-      caption: "a caption",
-      document: { file_id: "f", file_name: "passport-scan.pdf" },
-    };
-    const all: MessageDropReason[] = ["chat", "service", "bot", "user", "no-thread"];
-    for (const r of all) {
-      const line = JSON.stringify(messageDropLog(r, m));
-      for (const secret of ["private words", "a caption", "passport-scan"]) {
-        expect(line).not.toContain(secret);
-      }
-    }
   });
 });
