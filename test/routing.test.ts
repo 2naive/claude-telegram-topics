@@ -5,6 +5,12 @@ import {
   pickMirrorOwner,
   partitionConsoles,
   isServiceMessage,
+  inboundAttachment,
+  formatDuration,
+  withSavedPath,
+  richMessageToText,
+  richTextToString,
+  type AttachmentMessage,
   parseCallback,
   permCallbackData,
   pickSessionField,
@@ -441,7 +447,7 @@ describe("isServiceMessage (skip Telegram pins & service messages, 0.20.9)", () 
     expect(isServiceMessage({ document: { file_id: "a" }, caption: "hi" })).toBe(false);
   });
 
-  test("an unhandled-media message (sticker/voice) is NOT service — the placeholder still applies", () => {
+  test("a media message (sticker/voice) is NOT service — it goes on to the media path", () => {
     expect(isServiceMessage({ sticker: { file_id: "s" } })).toBe(false);
     expect(isServiceMessage({ voice: { file_id: "v" } })).toBe(false);
   });
@@ -454,5 +460,231 @@ describe("isServiceMessage (skip Telegram pins & service messages, 0.20.9)", () 
 
   test("a service field explicitly null does not count", () => {
     expect(isServiceMessage({ pinned_message: null, text: "hi" })).toBe(false);
+  });
+});
+
+describe("formatDuration (media labels)", () => {
+  test("seconds, minutes and hours read compactly", () => {
+    expect(formatDuration(0)).toBe("0s");
+    expect(formatDuration(12)).toBe("12s");
+    expect(formatDuration(59)).toBe("59s");
+    expect(formatDuration(60)).toBe("1m00s");
+    expect(formatDuration(185)).toBe("3m05s");
+    expect(formatDuration(3723)).toBe("1h02m03s");
+  });
+
+  test("a missing or malformed duration reads as 0s rather than throwing", () => {
+    expect(formatDuration(-3)).toBe("0s");
+    expect(formatDuration(Number.NaN)).toBe("0s");
+    expect(formatDuration(undefined as unknown as number)).toBe("0s");
+  });
+});
+
+describe("inboundAttachment (voice, audio, video and video notes download like documents)", () => {
+  test("a document keeps its label and file name verbatim", () => {
+    expect(inboundAttachment({ document: { file_id: "d1", file_name: "report.pdf" } })).toEqual({
+      kind: "document",
+      fileId: "d1",
+      filename: "report.pdf",
+      text: "[file: report.pdf]",
+    });
+    expect(inboundAttachment({ document: { file_id: "d2" }, caption: "see p.3" })).toEqual({
+      kind: "document",
+      fileId: "d2",
+      filename: "file",
+      text: "[file: file] see p.3",
+    });
+  });
+
+  test("a photo downloads its largest size as photo.jpg", () => {
+    expect(
+      inboundAttachment({ photo: [{ file_id: "small" }, { file_id: "large" }], caption: "the sign" }),
+    ).toEqual({ kind: "photo", fileId: "large", filename: "photo.jpg", text: "[photo]: the sign" });
+    expect(inboundAttachment({ photo: [{ file_id: "only" }] })?.text).toBe("[photo]");
+  });
+
+  test("a voice note is labelled with its duration and saved by MIME type", () => {
+    const voice = { file_id: "v1", duration: 12, mime_type: "audio/ogg" };
+    expect(inboundAttachment({ voice })).toEqual({
+      kind: "voice",
+      fileId: "v1",
+      filename: "voice.ogg",
+      text: "[voice 12s]",
+    });
+    // The caption follows the label, as it does for a document.
+    expect(inboundAttachment({ voice: { file_id: "v2", duration: 12 }, caption: "urgent" })?.text).toBe(
+      "[voice 12s] urgent",
+    );
+  });
+
+  test("an audio file is named from file_name, then title, else by duration alone", () => {
+    expect(
+      inboundAttachment({
+        audio: { file_id: "a1", duration: 185, file_name: "track.mp3", mime_type: "audio/mpeg" },
+      }),
+    ).toEqual({ kind: "audio", fileId: "a1", filename: "track.mp3", text: "[audio: track.mp3, 3m05s]" });
+    expect(
+      inboundAttachment({
+        audio: { file_id: "a2", duration: 185, title: "Interview", mime_type: "audio/mp4" },
+      }),
+    ).toEqual({ kind: "audio", fileId: "a2", filename: "audio.m4a", text: "[audio: Interview, 3m05s]" });
+    expect(inboundAttachment({ audio: { file_id: "a3", duration: 7 } })).toEqual({
+      kind: "audio",
+      fileId: "a3",
+      filename: "audio.mp3",
+      text: "[audio 7s]",
+    });
+  });
+
+  test("a video keeps its file name; a video note has none", () => {
+    expect(
+      inboundAttachment({
+        video: { file_id: "vd1", duration: 65, file_name: "clip.mov", mime_type: "video/quicktime" },
+      }),
+    ).toEqual({ kind: "video", fileId: "vd1", filename: "clip.mov", text: "[video: clip.mov, 1m05s]" });
+    expect(inboundAttachment({ video: { file_id: "vd2", duration: 65 } })).toEqual({
+      kind: "video",
+      fileId: "vd2",
+      filename: "video.mp4",
+      text: "[video 1m05s]",
+    });
+    expect(inboundAttachment({ video_note: { file_id: "vn", duration: 8 }, caption: "hi" })).toEqual({
+      kind: "video_note",
+      fileId: "vn",
+      filename: "video_note.mp4",
+      text: "[video note 8s] hi",
+    });
+  });
+
+  test("an unknown MIME type falls back to the kind's default extension", () => {
+    const voice = (mime_type?: string) =>
+      inboundAttachment({ voice: { file_id: "v", duration: 1, mime_type } })?.filename;
+    expect(voice("audio/x-unknown")).toBe("voice.ogg");
+    expect(voice(undefined)).toBe("voice.ogg");
+    expect(voice("audio/MPEG; codecs=x")).toBe("voice.mp3");
+  });
+
+  test("plain text and media the bridge does not download give null — the placeholder path", () => {
+    expect(inboundAttachment({})).toBeNull();
+    expect(inboundAttachment({ caption: "orphan caption" })).toBeNull();
+    const sticker = { sticker: { file_id: "s" } } as AttachmentMessage;
+    expect(inboundAttachment(sticker)).toBeNull();
+  });
+
+  test("precedence matches the old handler: a document wins over a photo", () => {
+    const m: AttachmentMessage = { document: { file_id: "d" }, photo: [{ file_id: "p" }] };
+    expect(inboundAttachment(m)?.kind).toBe("document");
+  });
+});
+
+describe("withSavedPath (what the session reads after the download)", () => {
+  test("a downloaded file appends saved:<path>", () => {
+    expect(withSavedPath("[voice 12s]", "/inbox/abc_voice.ogg")).toBe(
+      "[voice 12s] saved:/inbox/abc_voice.ogg",
+    );
+  });
+
+  test("a failed, oversized or timed-out download leaves the label alone — no saved: path", () => {
+    // downloadFile() returns null in all three cases; the session still learns
+    // that a voice note arrived and how long it is, as it does for a document.
+    expect(withSavedPath("[voice 12s]", null)).toBe("[voice 12s]");
+    expect(withSavedPath("[audio: track.mp3, 3m05s] listen", null)).toBe(
+      "[audio: track.mp3, 3m05s] listen",
+    );
+    expect(withSavedPath("[file: report.pdf]", null)).toBe("[file: report.pdf]");
+  });
+});
+
+describe("richTextToString (flatten a RichText node)", () => {
+  test("plain string, array, and formatting wrappers", () => {
+    expect(richTextToString("hello")).toBe("hello");
+    expect(richTextToString(["a", "b", "c"])).toBe("abc");
+    expect(richTextToString({ type: "bold", text: "B" })).toBe("B");
+    expect(
+      richTextToString(["pre ", { type: "italic", text: ["nested ", { type: "bold", text: "X" }] }]),
+    ).toBe("pre nested X");
+  });
+
+  test("leaf nodes: url keeps its text, custom emoji its alt, math its expression", () => {
+    expect(richTextToString({ type: "url", text: "site", url: "https://t.me" })).toBe("site");
+    expect(
+      richTextToString({ type: "custom_emoji", custom_emoji_id: "1", alternative_text: "👍" }),
+    ).toBe("👍");
+    expect(richTextToString({ type: "mathematical_expression", expression: "E=mc^2" })).toBe("E=mc^2");
+  });
+
+  test("null / junk is the empty string, never a throw", () => {
+    expect(richTextToString(null)).toBe("");
+    expect(richTextToString(undefined)).toBe("");
+    expect(richTextToString(42)).toBe("");
+    expect(richTextToString({ type: "divider" })).toBe("");
+  });
+});
+
+describe("richMessageToText (incoming native rich message → plain text)", () => {
+  test("headings and paragraphs join with blank lines", () => {
+    const rich = {
+      blocks: [
+        { type: "heading", text: "Verdict" },
+        { type: "paragraph", text: ["Prescription ", { type: "bold", text: "OK" }, "."] },
+      ],
+    };
+    expect(richMessageToText(rich)).toBe("Verdict\n\nPrescription OK.");
+  });
+
+  test("a table flattens to pipe-joined rows (+ caption)", () => {
+    const rich = {
+      blocks: [
+        {
+          type: "table",
+          cells: [
+            [{ text: "Eye", is_header: true }, { text: "Value", is_header: true }],
+            [{ text: "R" }, { text: "+4.25" }],
+            [{ text: "L" }, { text: [{ type: "bold", text: "+5.00" }] }],
+          ],
+          caption: "cyclo",
+        },
+      ],
+    };
+    expect(richMessageToText(rich)).toBe("Eye | Value\nR | +4.25\nL | +5.00\ncyclo");
+  });
+
+  test("lists keep their labels and nested block content", () => {
+    const rich = {
+      blocks: [
+        {
+          type: "list",
+          items: [
+            { label: "1.", blocks: [{ type: "paragraph", text: "first" }] },
+            { label: "2.", blocks: [{ type: "paragraph", text: "second" }] },
+          ],
+        },
+      ],
+    };
+    expect(richMessageToText(rich)).toBe("1. first\n2. second");
+  });
+
+  test("details summary + body, blockquote nesting, and media captions", () => {
+    expect(
+      richMessageToText({
+        blocks: [{ type: "details", summary: "More", blocks: [{ type: "paragraph", text: "body" }] }],
+      }),
+    ).toBe("More\nbody");
+    expect(
+      richMessageToText({
+        blocks: [{ type: "blockquote", blocks: [{ type: "paragraph", text: "quoted" }] }],
+      }),
+    ).toBe("quoted");
+    expect(
+      richMessageToText({ blocks: [{ type: "photo", caption: { text: "a caption" } }] }),
+    ).toBe("a caption");
+  });
+
+  test("empty / junk / no blocks yields an empty string (→ handler keeps [non-text message])", () => {
+    expect(richMessageToText(null)).toBe("");
+    expect(richMessageToText(undefined)).toBe("");
+    expect(richMessageToText({})).toBe("");
+    expect(richMessageToText({ blocks: [] })).toBe("");
+    expect(richMessageToText({ blocks: [{ type: "divider" }, { type: "unknown_future" }] })).toBe("---");
   });
 });

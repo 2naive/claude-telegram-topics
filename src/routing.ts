@@ -336,3 +336,238 @@ export function partitionConsoles<C extends { startedAt: number | null }>(
   }
   return { booting, zombies };
 }
+
+// --- Inbound attachments ---
+
+/** A media duration, compact: `12s`, `3m05s`, `1h02m03s`. Anything that is
+ * not a number reads as 0. */
+export function formatDuration(seconds: number): string {
+  const total = Math.max(0, Math.round(Number(seconds) || 0));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  if (h > 0) return `${h}h${pad(m)}m${pad(s)}s`;
+  if (m > 0) return `${m}m${pad(s)}s`;
+  return `${s}s`;
+}
+
+// Extension for a downloaded media file, from the MIME type Telegram reports
+// (a voice note is `audio/ogg`; music and video carry whatever was uploaded).
+// Unknown or absent → the kind's default.
+const MIME_EXT: Record<string, string> = {
+  "audio/ogg": "ogg",
+  "audio/mpeg": "mp3",
+  "audio/mp4": "m4a",
+  "audio/x-m4a": "m4a",
+  "audio/aac": "aac",
+  "audio/wav": "wav",
+  "audio/x-wav": "wav",
+  "audio/flac": "flac",
+  "video/mp4": "mp4",
+  "video/quicktime": "mov",
+  "video/webm": "webm",
+  "video/x-matroska": "mkv",
+};
+function mediaExt(mime: string | undefined, fallback: string): string {
+  const key = (mime ?? "").replace(/;.*$/, "").trim().toLowerCase();
+  return MIME_EXT[key] ?? fallback;
+}
+
+/** The message fields the attachment picker reads — a structural subset of
+ * grammy's `Message`, so tests can pass plain objects. */
+export type AttachmentMessage = {
+  caption?: string;
+  document?: { file_id: string; file_name?: string };
+  photo?: { file_id: string }[];
+  voice?: { file_id: string; duration: number; mime_type?: string };
+  audio?: {
+    file_id: string;
+    duration: number;
+    file_name?: string;
+    title?: string;
+    mime_type?: string;
+  };
+  video?: { file_id: string; duration: number; file_name?: string; mime_type?: string };
+  video_note?: { file_id: string; duration: number };
+};
+
+export type InboundAttachment = {
+  kind: "document" | "photo" | "voice" | "audio" | "video" | "video_note";
+  /** Telegram file id to download. */
+  fileId: string;
+  /** Name to save the download under (the downloader sanitizes and prefixes it). */
+  filename: string;
+  /** What the session reads: a bracketed label plus the caption, e.g.
+   * `[voice 12s] call me back`. The leader appends ` saved:<path>` once the
+   * download succeeds (withSavedPath). */
+  text: string;
+};
+
+/**
+ * The one downloadable attachment of a Telegram message (a message carries at
+ * most one), or null for plain text and for media the bridge does not download
+ * (a sticker, a contact, a poll…) — those keep the `[non-text message]`
+ * placeholder. Documents and photos keep their labels verbatim; a voice note,
+ * an audio file, a video or a video note gets a label with its duration, since
+ * the session cannot tell a 5 s note from a 40 min recording by the path.
+ * Pure.
+ */
+export function inboundAttachment(m: AttachmentMessage): InboundAttachment | null {
+  const caption = m.caption ?? "";
+  if (m.document) {
+    const name = m.document.file_name ?? "file";
+    return {
+      kind: "document",
+      fileId: m.document.file_id,
+      filename: name,
+      text: `[file: ${name}]${caption ? " " + caption : ""}`,
+    };
+  }
+  if (m.photo?.length) {
+    // Telegram lists sizes ascending — the last one is the largest.
+    const largest = m.photo[m.photo.length - 1]!;
+    return {
+      kind: "photo",
+      fileId: largest.file_id,
+      filename: "photo.jpg",
+      text: `[photo]${caption ? ": " + caption : ""}`,
+    };
+  }
+  const tail = caption ? " " + caption : "";
+  if (m.voice) {
+    return {
+      kind: "voice",
+      fileId: m.voice.file_id,
+      filename: `voice.${mediaExt(m.voice.mime_type, "ogg")}`,
+      text: `[voice ${formatDuration(m.voice.duration)}]${tail}`,
+    };
+  }
+  if (m.audio) {
+    const name = m.audio.file_name ?? m.audio.title;
+    const dur = formatDuration(m.audio.duration);
+    return {
+      kind: "audio",
+      fileId: m.audio.file_id,
+      filename: m.audio.file_name ?? `audio.${mediaExt(m.audio.mime_type, "mp3")}`,
+      text: `[audio${name ? `: ${name}, ` : " "}${dur}]${tail}`,
+    };
+  }
+  if (m.video) {
+    const name = m.video.file_name;
+    const dur = formatDuration(m.video.duration);
+    return {
+      kind: "video",
+      fileId: m.video.file_id,
+      filename: name ?? `video.${mediaExt(m.video.mime_type, "mp4")}`,
+      text: `[video${name ? `: ${name}, ` : " "}${dur}]${tail}`,
+    };
+  }
+  if (m.video_note) {
+    return {
+      kind: "video_note",
+      fileId: m.video_note.file_id,
+      filename: "video_note.mp4",
+      text: `[video note ${formatDuration(m.video_note.duration)}]${tail}`,
+    };
+  }
+  return null;
+}
+
+/** Appends the local path the session should open. A failed, oversized or
+ * slow download (downloadFile → null) leaves the label alone, so the message
+ * still says what arrived — the contract documents and photos already had. */
+export function withSavedPath(text: string, path: string | null): string {
+  return path ? `${text} saved:${path}` : text;
+}
+
+// --- Incoming native rich messages (Bot API 10.2) ---
+//
+// A forwarded rich message — anything the bot sent via sendRichMessage, e.g. a
+// table — arrives with its content in `message.rich_message.blocks`, NOT in
+// `message.text`. The handler read only text/caption, so such a forward became
+// `[non-text message]` with no content (live incident: a forwarded analysis was
+// lost, and the session then read other topics' files hunting for it). This
+// flattens the block tree to plain text so the session gets the words — not a
+// faithful re-render, but the headings, paragraphs, list items and table cells.
+// Defensive and structural (walks unknown shapes, never throws, "" on junk) so
+// an unforeseen block type can never break inbound.
+
+/** Flatten a RichText node (string | array | a {text}/leaf object) to a string. */
+export function richTextToString(rt: unknown): string {
+  if (rt == null) return "";
+  if (typeof rt === "string") return rt;
+  if (Array.isArray(rt)) return rt.map(richTextToString).join("");
+  if (typeof rt === "object") {
+    const o = rt as Record<string, unknown>;
+    if (o.text != null) return richTextToString(o.text); // bold/italic/url/… wrap text
+    if (typeof o.alternative_text === "string") return o.alternative_text; // custom emoji
+    if (typeof o.expression === "string") return o.expression; // inline math
+  }
+  return "";
+}
+
+function richBlockToText(b: unknown): string {
+  if (b == null || typeof b !== "object") return "";
+  const o = b as Record<string, unknown>;
+  const type = o.type;
+  if (type === "divider") return "---";
+  if (type === "table") {
+    const rows = Array.isArray(o.cells) ? o.cells : [];
+    const body = rows
+      .map((row) =>
+        (Array.isArray(row) ? row : [])
+          .map((cell) => {
+            const c = cell as Record<string, unknown> | null;
+            return c && c.text != null ? richTextToString(c.text) : "";
+          })
+          .join(" | "),
+      )
+      .join("\n");
+    const cap = o.caption != null ? richTextToString(o.caption) : ""; // table caption is RichText
+    return cap ? `${body}\n${cap}` : body;
+  }
+  if (type === "list") {
+    const items = Array.isArray(o.items) ? o.items : [];
+    return items
+      .map((it) => {
+        const i = (it ?? {}) as Record<string, unknown>;
+        const label = typeof i.label === "string" && i.label ? `${i.label} ` : "";
+        return (label + richBlocksToText(i.blocks)).trim();
+      })
+      .filter(Boolean)
+      .join("\n");
+  }
+  if (type === "details") {
+    return [richTextToString(o.summary), richBlocksToText(o.blocks)].filter(Boolean).join("\n");
+  }
+  if (Array.isArray(o.blocks)) {
+    // blockquote / collage / slideshow: nested blocks, caption is a {text} object
+    const body = richBlocksToText(o.blocks);
+    const capObj = o.caption as Record<string, unknown> | undefined;
+    const cap = capObj && typeof capObj === "object" ? richTextToString(capObj.text) : "";
+    return cap ? `${body}\n${cap}` : body;
+  }
+  if (o.text != null) return richTextToString(o.text); // paragraph/heading/pre/footer/pullquote
+  if (o.caption && typeof o.caption === "object") {
+    // media block (photo/video/audio/…): only its caption carries words
+    return richTextToString((o.caption as Record<string, unknown>).text);
+  }
+  if (typeof o.expression === "string") return o.expression; // math block
+  return "";
+}
+
+function richBlocksToText(blocks: unknown): string {
+  if (!Array.isArray(blocks)) return "";
+  return blocks
+    .map(richBlockToText)
+    .filter((s) => s.trim())
+    .join("\n\n");
+}
+
+/** Plain-text rendering of an incoming rich message's blocks, or "" when there
+ * is nothing readable. Accepts the raw `message.rich_message`. */
+export function richMessageToText(rich: unknown): string {
+  if (rich == null || typeof rich !== "object") return "";
+  return richBlocksToText((rich as Record<string, unknown>).blocks).trim();
+}

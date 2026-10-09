@@ -18,6 +18,7 @@ import {
 } from "./project.ts";
 import { tryBecomeLeader } from "./leader.ts";
 import type { Inbound } from "./leader.ts";
+import { clientLog } from "./clientlog.ts";
 
 const BASE = `http://127.0.0.1:${CONTROL_PORT}`;
 // Bound every request so a wedged-but-alive leader can't hang a tool forever;
@@ -111,6 +112,19 @@ async function ensureLeaderExists(): Promise<void> {
 // where identity never resolves.
 let identityWaited = false;
 
+// Throttle for re-registration diagnostics (client.log). A leader outage makes
+// every poll cycle clear the session and re-register, which would otherwise add
+// a line each cycle; one line per ~10 s is enough to see the loss happened and
+// how long it lasted. Observability only — never changes control flow. The sink
+// is size-bounded regardless (clientlog.ts), so this is just noise control.
+let lastReregLog = 0;
+function logReregister(reason: string): void {
+  const now = Date.now();
+  if (now - lastReregLog < 10_000) return;
+  lastReregLog = now;
+  clientLog("inbound.reregister", { reason });
+}
+
 async function register(honorHandoff = true): Promise<void> {
   // Give the session record a bounded chance to appear before the FIRST
   // registration — registering the provisional process.cwd() identity would
@@ -194,6 +208,10 @@ async function register(honorHandoff = true): Promise<void> {
   lastSessionId = sessionId;
   topicId = data.topicId ?? null;
   registeredKey = key;
+  // Transition marker: a session (re-)registered. Rare in steady state (once at
+  // startup); a burst here is the fingerprint of a flapping registration that
+  // the heartbeat watchdog cannot see, since a re-registering loop still beats.
+  clientLog("inbound.registered", { key, sid: sessionId.slice(0, 8) });
   // Provisional identity — or one that resolved to something else while the
   // request was in flight — arms the self-heal.
   if (!identityResolved() || key !== projectKey()) startHealLoop();
@@ -357,6 +375,10 @@ export async function poll(timeoutSec = 25): Promise<Inbound[]> {
       (timeoutSec + 10) * 1000,
     );
     if (resp.status === 404) {
+      // Leader no longer knows this session (it restarted/handed off): clearing
+      // sessionId makes the next ensureRegistered re-register. Logged so a
+      // deaf-but-looping session — the class that was undiagnosable — is visible.
+      logReregister("poll-404");
       sessionId = null;
       return [];
     }
@@ -364,6 +386,7 @@ export async function poll(timeoutSec = 25): Promise<Inbound[]> {
     return data.messages ?? [];
   } catch {
     // Timeout or leader gone — drop registration so the next call re-elects.
+    logReregister("poll-error");
     sessionId = null;
     leaderStarted = false;
     return [];
