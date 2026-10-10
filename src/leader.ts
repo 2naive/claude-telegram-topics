@@ -1098,8 +1098,13 @@ function initBot(): void {
       // (the Stop hook still returns it to ready). No-op if the topic is unmapped.
       const proj = projectForTopic(topicId);
       if (proj) {
-        spokeThisTurn.delete(proj); // new turn — the session hasn't spoken yet
-        lastMirrored.delete(proj);
+        // Per-turn mirror state (spokeThisTurn, lastMirrored) is deliberately NOT
+        // reset here. A message that arrives mid-turn is only queued by Claude Code;
+        // resetting on arrival landed inside the running turn, and when that turn
+        // ended first its Stop mirror posted the closing text as a second message
+        // although the session had already answered via send_message (#8). The
+        // UserPromptSubmit "start" ping resets it when the message actually reaches
+        // the model — as it already does for console turns, button taps and reactions.
         setActivity(proj, "working");
         checkHookless(proj, topicId); // warn if this session has no auto-mirror
       }
@@ -1427,9 +1432,10 @@ async function withRecovery<T>(
 
 // A session that sent its own outbound this turn (a send_message with buttons, a
 // file, an edit) has "spoken" — the Stop auto-mirror then skips, so an
-// interactive turn is not double-posted. Reset at each turn start: the
-// UserPromptSubmit "start" ping for a console turn, inbound routing for a
-// Telegram turn. Keyed by project (the mirror arrives keyed the same way).
+// interactive turn is not double-posted. Reset only at the UserPromptSubmit
+// "start" ping — the turn boundary for console turns, Telegram messages, button
+// taps and reactions alike (not on inbound routing: a mid-turn message is only
+// queued). Keyed by project (the mirror arrives keyed the same way).
 const spokeThisTurn = new Set<string>();
 
 // Above this many chunks the mirror stops push-flooding the topic: it sends one
