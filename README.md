@@ -396,6 +396,7 @@ All optional, set in the `.env` (or the environment):
 | `TG_TOPICS_AUTOSTART` | `1` = when a message arrives for a project with no live session, launch one automatically (Windows only) instead of offering a button. |
 | `TG_TOPICS_LAUNCH_ROOTS` | Semicolon-separated trusted directories under which `/start <path>` may launch a **brand-new** project (one not yet in `topics.json`). **Default-deny**: unset = launch-by-path disabled. Launching an arbitrary path named in a chat message is remote code-exec, so keep this confined to roots you trust (e.g. `C:\Users\you\code`). |
 | `TG_TOPICS_STATUS_ICONS` | Topic-name status badge (see [Liveness](#liveness)). On by default; set `0` to keep topic names unbadged. |
+| `TG_TOPICS_COALESCE_MS` | After an inbound message, wait this long (ms, default `1200`) for the rest of a burst — a forward of several messages or an album arrives as separate Telegram messages — and push consecutive messages from the same sender as one channel tag (`message_ids` lists them). `0` = push each message on its own. |
 
 **Environment variables take precedence over the `.env`.** If
 `TELEGRAM_BOT_TOKEN`, `TELEGRAM_GROUP_CHAT_ID` or `TELEGRAM_ALLOWED_USER_IDS`

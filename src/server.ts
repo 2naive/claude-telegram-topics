@@ -29,6 +29,7 @@ import { waitForClientReady } from "./ready.ts";
 import { clientLog } from "./clientlog.ts";
 import * as channel from "./client.ts";
 import type { Inbound } from "./leader.ts";
+import { coalesce, COALESCE_MS, type Merged } from "./coalesce.ts";
 
 // Custom outbound notification, added to the server's notification union so
 // mcp.notification() type-checks without a cast.
@@ -52,6 +53,8 @@ const INSTRUCTIONS = [
   "directory and do NOT go looking for an attachment that has no `saved:` path — those files",
   "belong to OTHER projects and people, and reading them is a privacy breach. No `saved:` path",
   "means no readable file arrived (e.g. a forward Telegram did not hand us); ask the user to resend.",
+  "A quick burst from the user (a forward of several messages, an album) arrives as ONE tag:",
+  "the texts joined by newlines, `message_ids` listing every message, `message_id` the first.",
   "",
   "To message the user, use send_message (it posts to this project's topic — there is no",
   "chat id to pass). Use send_file to attach a local file, react to add an emoji reaction,",
@@ -131,7 +134,7 @@ function safe(s: string): string {
   return s.replace(/[<>\[\]\r\n;]/g, "_");
 }
 
-function pushInbound(m: Inbound): void {
+function pushInbound(m: Merged): void {
   if (m.type === "permission") {
     void mcp
       .notification({
@@ -155,6 +158,8 @@ function pushInbound(m: Inbound): void {
     kind: m.type,
     ts: new Date(m.ts).toISOString(),
   };
+  // A coalesced burst (see coalesce.ts): message_id is the first one, all ids here.
+  if (m.mergedIds) meta.message_ids = m.mergedIds.join(",");
   void mcp
     .notification({ method: "notifications/claude/channel", params: { content, meta } })
     .catch((e) => process.stderr.write(`telegram-topics: channel push failed: ${e}\n`));
@@ -223,9 +228,19 @@ async function runInboundLoop(): Promise<void> {
       process.stderr.write(`telegram-topics: inbound gate open (${readiness})\n`);
     }
     const msgs = await channel.drainMessages().catch(() => [] as Inbound[]);
-    for (const m of msgs) pushInbound(m);
+    for (const m of coalesce(msgs, COALESCE_MS)) pushInbound(m);
     const more = await channel.poll(25).catch(() => [] as Inbound[]);
-    for (const m of more) pushInbound(m);
+    // A message may be the head of a burst (forward of several messages, an
+    // album): wait briefly for the rest and push the burst as one notification.
+    // Each round waits at most COALESCE_MS; the cap bounds a long album.
+    if (COALESCE_MS > 0 && more.some((m) => m.type === "message")) {
+      for (let round = 0; round < 5; round++) {
+        const tail = await channel.poll(COALESCE_MS / 1000).catch(() => [] as Inbound[]);
+        if (tail.length === 0) break;
+        more.push(...tail);
+      }
+    }
+    for (const m of coalesce(more, COALESCE_MS)) pushInbound(m);
     if (more.length === 0) await new Promise((r) => setTimeout(r, 500));
   }
 }
