@@ -99,20 +99,33 @@ const closesOnQuote = (ch: string | undefined): boolean =>
 
 // Emphasis flanking, tightened past bare CommonMark for model output where
 // code-shaped text must survive verbatim. An emphasis run (length-`len` marker
-// at `i`) may OPEN only when it is not glued to a word on its outer side and
-// its content starts with a letter/digit, an emoji/symbol, or a nested marker.
-// `_` is stricter (paths and identifiers are full of underscores): its left
-// neighbour must be a boundary char, not merely a non-alnum. So `x**2`, `a_b`,
+// at `i`) may OPEN only when it is not glued to a word on its outer side. What
+// may follow then splits by marker width: a SINGLE `*`/`_` is strict (it lives
+// in globs/paths/math) and opens only before a letter/digit, emoji/symbol,
+// nested marker or opening quote; a DOUBLE `**`/`~~` is unambiguous and opens
+// before any non-space content except a slash. `_` is stricter still on its
+// left (paths and identifiers are full of underscores). So `x**2`, `a_b`,
 // `2 * 3`, `*.log`, `**/dist`, `a[*]`, `C:\_temp_` stay literal, while
-// `**bold**`, `*it*`, `**_bolditalic_**`, `_x_` and `**✅ ok**` open.
+// `**bold**`, `*it*`, `**_bolditalic_**`, `_x_`, `**✅ ok**`, `**#102**` and
+// `**@user**` open.
 function opensAt(src: string, i: number, len: number, marker: string): boolean {
   const left = src[i - 1];
   const leftOk =
     marker === "_" ? left === undefined || UNDERSCORE_LEFT.test(left) : !isAlnum(left);
+  if (!leftOk) return false;
   const right = src[i + len];
-  return (
-    leftOk && (isAlnum(right) || isMarker(right) || isContentStart(right) || opensOnQuote(right))
-  );
+  if (len === 2) {
+    // A double marker (** / ~~) is unambiguous — it does NOT occur in the
+    // glob/path/math code-shapes that force the single-marker whitelist (those
+    // carry a lone * or _, or are glued to a word, which leftOk already rejects).
+    // So it may open before ANY non-space content except a slash — that keeps
+    // `**/dist/**` and `**/*.js` literal. This lets bold/strikethrough that
+    // starts with the punctuation a model actually writes — `#102`, `@user`,
+    // `(note)`, `$5`, a nested marker — render instead of leaking a literal `**`.
+    return right !== undefined && !/\s/.test(right) && right !== "/";
+  }
+  // Single * / _ stay strict: `*.log`, `2 * 3`, `a_b`, `C:\_temp_` must survive.
+  return isAlnum(right) || isMarker(right) || isContentStart(right) || opensOnQuote(right);
 }
 
 function findClose(src: string, from: number, marker: string, len: number): number {

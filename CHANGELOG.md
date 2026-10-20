@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.20.20 — 2026-10-20
+
+- **Bold/strikethrough that starts with punctuation now renders (no more literal
+  `**`).** A `**#102 → …**` or `**@user**` reached Telegram as a literal `**`:
+  the emphasis opener required the content to start with a letter, digit, emoji
+  or quote, so a double marker before `#`, `@`, `(`, `$`, … never opened. The
+  opener now splits by marker width — a SINGLE `*`/`_` keeps the strict whitelist
+  (it lives in globs/paths/math: `*.log`, `2 * 3`, `a_b`, `C:\_temp_`), while a
+  DOUBLE `**`/`~~` is unambiguous and opens before any non-space content except a
+  slash. The slash exclusion keeps `**/dist/**` and `**/*.js` literal; `x**2`,
+  `2 ** 3 ** 4` and the other code-shapes stay literal as before (guarded by the
+  outer-word/whitespace rules). 293 tests.
+
 ## 0.20.19 — 2026-10-09
 
 - **Autostart consoles no longer die with "'bun' is not recognized".** Live
