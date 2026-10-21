@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.20.21 — 2026-10-22
+
+- **The mirror now posts the WHOLE turn, not just its last block — multi-step
+  answers no longer arrive truncated on the phone.** Live incident (`greensms_sip`):
+  a turn ran text → tool → text → tool → text ("Результат теста…" → `tcpdump` →
+  "Два варианта…" → capture → "Вердикт…"); the console showed all three blocks but
+  Telegram got only the final one, so the substance ("what I found", "the two
+  options") was silently dropped. The Stop hook took the turn's LAST assistant
+  message by design, on the assumption that earlier in-turn text is throwaway
+  narration ("let me check…") — false for sessions where each block between tool
+  calls is real content. `finalAnswerText` now reconstructs every in-turn text
+  block from the transcript (bounded at the turn's user prompt) and joins them
+  with blank lines, matching the console byte-for-byte. The Stop payload's
+  `last_assistant_message` is kept only to BACKFILL the final block when the JSONL
+  write lags behind Stop (the race PR #6 fixed), appended only when it is not
+  already the turn's last block — compared whitespace-insensitively so a
+  multi-text-block final message is not duplicated. Degrades to payload-only if the
+  transcript is unreadable. 298 tests.
+
 ## 0.20.20 — 2026-10-20
 
 - **Bold/strikethrough that starts with punctuation now renders (no more literal

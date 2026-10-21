@@ -8,11 +8,12 @@
 // this turn (send_message with buttons, a file, an edit), so interactive turns
 // are not double-posted — the model's own message stands.
 //
-// CONTRACT: fire-and-forget. Takes the answer from the Stop payload (or, when
-// the payload has none — an older Claude Code, or a turn whose last message has
-// no text — from the transcript), does one bounded localhost POST (the leader
-// sends to Telegram asynchronously), always exits 0 — it must never delay or
-// fail a turn.
+// CONTRACT: fire-and-forget. Mirrors the WHOLE turn — every assistant text block
+// the console showed, read from the transcript and joined with blank lines (see
+// finalAnswerText), with the Stop payload's last_assistant_message used only to
+// backfill the final block when the JSONL write lags behind Stop. Does one bounded
+// localhost POST (the leader sends to Telegram asynchronously), always exits 0 — it
+// must never delay or fail a turn.
 
 import { readFileSync } from "node:fs";
 import { keyFromCwd } from "../src/projectkey.ts";
@@ -43,11 +44,12 @@ async function main(): Promise<void> {
 
   let text = "";
   try {
-    // Prefer the payload's last_assistant_message: the transcript may not hold
-    // the final entry yet when Stop fires (see finalAnswerText). The fallback is
-    // a whole-file read: transcripts are JSONL and typically small; a very long
-    // session could make this heavier, but it stays well within the 5s hook
-    // budget. lastAssistantText walks from the end, so only the tail is parsed.
+    // Reconstruct the whole turn from the transcript, with the payload backfilling
+    // the final block (see finalAnswerText). Whole-file read: transcripts are JSONL
+    // and typically small; a very long incident session makes this heavier, but it
+    // stays well within the 5s hook budget, and a bounded tail read is unsafe — a
+    // huge mid-turn tool_result (e.g. a packet capture) could push the turn
+    // boundary out of a fixed window and leak a prior turn's text.
     text = finalAnswerText(input.last_assistant_message, () => readFileSync(transcriptPath, "utf8"));
   } catch {
     return; // transcript unreadable — skip silently
