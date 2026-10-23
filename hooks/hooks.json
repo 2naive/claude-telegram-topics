@@ -6,7 +6,7 @@
           {
             "type": "command",
             "command": "bun \"${CLAUDE_PLUGIN_ROOT}/hooks/activity.ts\" start",
-            "timeout": 5
+            "timeout": 15
           }
         ]
       }
@@ -18,7 +18,8 @@
           {
             "type": "command",
             "command": "bun \"${CLAUDE_PLUGIN_ROOT}/hooks/activity.ts\" working",
-            "timeout": 5
+            "timeout": 15,
+            "async": true
           }
         ]
       }
@@ -29,12 +30,12 @@
           {
             "type": "command",
             "command": "bun \"${CLAUDE_PLUGIN_ROOT}/hooks/activity.ts\" idle",
-            "timeout": 5
+            "timeout": 15
           },
           {
             "type": "command",
             "command": "bun \"${CLAUDE_PLUGIN_ROOT}/hooks/mirror.ts\"",
-            "timeout": 5
+            "timeout": 15
           }
         ]
       }
@@ -46,7 +47,7 @@
           {
             "type": "command",
             "command": "bun \"${CLAUDE_PLUGIN_ROOT}/hooks/activity.ts\" failed",
-            "timeout": 5
+            "timeout": 15
           }
         ]
       }

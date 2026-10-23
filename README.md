@@ -203,8 +203,9 @@ You never have to guess whether the bridge is alive:
   **🔔 needs you** (a permission prompt is waiting) · **📥 queued** (messages
   held, no session) · **💤 no session** (the CLI isn't running). Working/idle
   comes from the plugin's activity hooks (`hooks/hooks.json`, auto-active) plus
-  the leader's own signal for Telegram-driven turns; it flips per turn. Set
-  `TG_TOPICS_STATUS_ICONS=0` to keep topic names unbadged.
+  the leader's own signal for Telegram-driven turns; it flips per turn. The
+  per-tool-call heartbeat is a background (`async`) hook, so tool calls never
+  wait on it. Set `TG_TOPICS_STATUS_ICONS=0` to keep topic names unbadged.
 - **`/status`** (in any topic, or General) — the leader itself answers with its
   version, pid and uptime, then **one line per bridged project** (its glyph +
   name + session labels, or `N queued, no session`, or `no session`) and a

@@ -1098,9 +1098,7 @@ function initBot(): void {
       // (the Stop hook still returns it to ready). No-op if the topic is unmapped.
       const proj = projectForTopic(topicId);
       if (proj) {
-        spokeThisTurn.delete(proj); // new turn — the session hasn't spoken yet
-        lastMirrored.delete(proj);
-        setActivity(proj, "working");
+        beginTurn(proj);
         checkHookless(proj, topicId); // warn if this session has no auto-mirror
       }
     }
@@ -1438,6 +1436,17 @@ const MIRROR_MAX_CHUNKS = 4;
 // Last text mirrored per project, so a re-fired Stop (stop_hook_active) does not
 // double-post identical text. Cleared at each turn start.
 const lastMirrored = new Map<string, string>();
+
+// A turn is starting for `project`: whatever the session said LAST turn no
+// longer stands the auto-mirror down, a fresh answer may legitimately repeat
+// the previous one, and the badge shows ⏳. Every turn-starting path goes
+// through here — the live inbound route, the held-inbox drain at register and
+// the start hook — so the mirror never hinges on the activity hook alone.
+function beginTurn(project: string): void {
+  spokeThisTurn.delete(project);
+  lastMirrored.delete(project);
+  setActivity(project, "working");
+}
 // Cooldown for the "mirror incomplete" notice, so a persistent outage does not
 // itself flood the topic.
 const lastMirrorNotice = new Map<number, number>();
@@ -1760,13 +1769,8 @@ async function handle(req: Request): Promise<Response> {
       lastActivityAt.set(project, Date.now());
       clearPendingConfirm(project);
       if (state === "failed") notifyTurnFailed(project);
-      else if (state === "start") {
-        // Turn boundary (UserPromptSubmit) — the session hasn't spoken yet, and
-        // a fresh answer may legitimately repeat the previous one.
-        spokeThisTurn.delete(project);
-        lastMirrored.delete(project);
-        setActivity(project, "working");
-      } else setActivity(project, state === "idle" ? "idle" : "working");
+      else if (state === "start") beginTurn(project); // turn boundary (UserPromptSubmit)
+      else setActivity(project, state === "idle" ? "idle" : "working");
     }
     return json({ ok: true });
   }
@@ -1880,10 +1884,13 @@ async function handle(req: Request): Promise<Response> {
       // Drained messages go to THIS session only — no fan-out copies exist.
       for (const m of held.msgs) fresh.soloMids.add(m.messageId);
       log("held.drained", { sid: id, project, count: held.msgs.length });
-      // The new session is about to process the drained queue — show ⏳ (the
-      // Stop hook / TTL returns it to 🟢). Covers the case where the activity
-      // hook may not fire for queued channel messages.
-      if (held.msgs.length > 0) setActivity(project, "working");
+      // The new session is about to process the drained queue — begin the turn
+      // here (⏳ + re-arm the auto-mirror; the Stop hook / TTL returns it to 🟢).
+      // Can't lean on the start hook: on a cold, starved console start it may be
+      // killed by its timeout, and `spokeThisTurn` is keyed by PROJECT — a
+      // previous session's send_message would otherwise stand the mirror down
+      // for this session's first answer (phone shows 🟢, no reply).
+      if (held.msgs.length > 0) beginTurn(project);
     }
     // A registration keyed to the config dir is almost always the process.cwd()
     // fallback (identity race), not a real project — the client self-heals by

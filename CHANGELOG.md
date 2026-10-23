@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.20.22 — 2026-10-23
+
+- **Activity hooks no longer get killed at 5s on a cold console start, and the
+  per-tool-call heartbeat runs in the background.** Live incident (`hh`,
+  autostarted with `--continue` on two held messages): the console printed
+  `UserPromptSubmit hook [bun ".../hooks/activity.ts" start] timed out after 5s
+  — output discarded`. The hook itself is cheap (~0.33s idle: bun startup
+  ~0.28s, `git rev-parse` 0.04s, POST ≤0.3s), but `leader.log` shows the first
+  `start` after an autostart landing 2.2s / 3.2s / 4.8s / 14.0s after the held
+  drain — a `--continue` console resuming a big transcript starves every child
+  process, and the 5s cap (Claude Code's own default for UserPromptSubmit is
+  30s) killed the hook and discarded its signal. Every hook now has
+  `timeout: 15` (the script bounds itself at git 3s + fetch 0.3s, so the cap
+  only bites when the machine is starved — and then waiting beats discarding),
+  and the `PreToolUse` heartbeat is `"async": true`, so Claude Code no longer
+  waits ~0.3s on it before every tool call. Turn-boundary hooks (`start`,
+  `idle`, `failed`, mirror) stay synchronous: their order matters (`start`
+  must land before the turn's first `send_message`). Pinned by
+  `test/hooks.test.ts`.
+- **Leader: draining the held inbox into a fresh session now begins the turn
+  properly** (`beginTurn`: clear `spokeThisTurn` + `lastMirrored`, show ⏳) —
+  the same as the live inbound route and the `start` hook. `spokeThisTurn` is
+  keyed by PROJECT and outlives sessions, so a project whose previous session
+  ended its turn with `send_message` (buttons) and is then autostarted on held
+  messages depended entirely on the `start` hook to re-arm the auto-mirror —
+  exactly the hook a cold start kills. The incident survived only because the
+  second drained message's hook got through; a single held message would have
+  left the answer unmirrored (🟢 badge, no reply on the phone).
+
 ## 0.20.21 — 2026-10-22
 
 - **The mirror now posts the WHOLE turn, not just its last block — multi-step
