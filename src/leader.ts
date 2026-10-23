@@ -1020,13 +1020,27 @@ function initBot(): void {
 
   bot.on("message", async (ctx) => {
     const m = ctx.message;
-    if (!inGroup(m.chat.id)) return;
+    // Refusals stay silent in Telegram (by design) but log message.drop, the
+    // counterpart of callback.drop — metadata only, never text or file names.
+    if (!inGroup(m.chat.id)) {
+      log("message.drop", { reason: "chat" });
+      return;
+    }
     // Service messages (a pin, a forum-topic event, a member change) carry no
     // user prompt — never forward one as a turn (live: pinning in telebot woke
-    // the session with "[non-text message]").
+    // the session with "[non-text message]"). Not logged: most are the echo of
+    // our own badge rename (editForumTopic), right after its "badge" line.
     if (isServiceMessage(m as unknown as Record<string, unknown>)) return;
-    if (m.from?.is_bot) return;
-    if (!isAllowedUser(m.from?.id)) return;
+    // Bots never see other bots' messages, so a bot-flagged sender here is a
+    // placeholder (e.g. a post on behalf of the chat) — a person may be behind it.
+    if (m.from?.is_bot) {
+      log("message.drop", { reason: "bot", from: String(m.from.id) });
+      return;
+    }
+    if (!isAllowedUser(m.from?.id)) {
+      log("message.drop", { reason: "user", from: String(m.from?.id ?? "") });
+      return;
+    }
     const topicId = m.message_thread_id;
     // Leader-answered commands work everywhere, including the General topic.
     // `/status` and `/list` are intercepted only bare ("/status of the deploy"
@@ -1040,7 +1054,12 @@ function initBot(): void {
     ) {
       if (await handleCommand(t, topicId)) return;
     }
-    if (topicId === undefined) return; // General topic / non-topic messages ignored
+    if (topicId === undefined) {
+      // General topic / non-topic messages ignored (logged, so a message posted
+      // to General by mistake is findable).
+      log("message.drop", { reason: "no-thread", mid: m.message_id });
+      return;
+    }
     trackInbound(m.message_id, topicId);
 
     const from = m.from?.username ?? String(m.from?.id ?? "user");
