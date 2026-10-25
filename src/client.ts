@@ -439,12 +439,24 @@ export function currentTopic(): number | null {
  * the topic — inbound was quietly queued to a corpse and autostart never
  * fired (live incident; the idle reaper is only a slow backstop).
  */
-export function unregister(): void {
+export function unregister(reason = ""): void {
   if (!sessionId) return;
+  // `reason` (the shutdown cause) lets the leader log WHY a session left and
+  // tell the topic when the console outlived its server — the deaf-console
+  // class was undiagnosable from leader.log alone.
   void fetchT(`${BASE}/unregister`, 1000, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ sessionId }),
+    body: JSON.stringify({ sessionId, reason }),
   }).catch(() => {});
   sessionId = null;
+}
+
+/**
+ * This session's server is clearly leaking (RSS past the warn mark) — the
+ * leader posts a one-time heads-up in the topic so the user can restart the
+ * console at a convenient moment instead of discovering a deaf session later.
+ */
+export async function memWarn(rssMb: number): Promise<void> {
+  await call("/memwarn", { rssMb });
 }

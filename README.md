@@ -225,6 +225,13 @@ You never have to guess whether the bridge is alive:
   failure isn't silent (the badge would otherwise just fall back to 🟢). Detected
   via the `StopFailure` hook. Note: a *user interrupt* (Esc), a hang, or a hard
   crash fire no Claude Code hook, so those aren't signalled.
+- **Bridge lost?** Claude Code never restarts a dead MCP server, so if a
+  session's server exits while its console keeps running, the topic gets a
+  `⚠️ Session «…» lost its Telegram link …` notice with the way back (`/mcp` →
+  reconnect, or restart the console; a new message autostarts a fresh one). And
+  when a server's memory grows past 1.5 GB (a slow leak under investigation —
+  the server keeps working) you get a one-time `⚠️ … restart this console when
+  convenient`.
 
 ## Approving tool calls from Telegram
 

@@ -61,6 +61,7 @@ import {
   LEADER_IDLE_TIMEOUT_SEC,
   POLL_MAX_SEC,
 } from "./routing.ts";
+import { channelLostNotice, memWarnNotice } from "./routing.ts";
 import {
   flushSent,
   loadSent,
@@ -120,6 +121,8 @@ type Session = {
    * leader attribute an auto-mirrored answer to this session so a reply to it
    * routes back here instead of fanning out. Absent on pre-0.20.3 clients. */
   claudeSessionId?: string;
+  /** A memory heads-up was already posted for this session (one per session). */
+  memWarned?: boolean;
 };
 
 const INBOX_DIR = join(STATE_DIR, "inbox");
@@ -563,6 +566,49 @@ function notifyTurnFailed(project: string): void {
       { message_thread_id: topicId },
     )
     .catch(() => {});
+}
+
+// A session's MCP server exited while its console is still running: that
+// console has silently lost Telegram (no inbound, no mirror) and Claude Code
+// never restarts a dead MCP server. Say so in the topic — this class of outage
+// was invisible until the user noticed the silence (live: four sessions over
+// two days, the last one the leader, leaving the whole bridge deaf). Checked a
+// few seconds after the goodbye: a console closing normally is gone by then,
+// and a plugin reload has registered its replacement server (same pid).
+const CHANNEL_LOST_GRACE_MS = 8_000;
+const CHANNEL_LOST_COOLDOWN_MS = 5 * 60_000;
+const lastChannelLostNotice = new Map<number, number>();
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as { code?: string }).code === "EPERM";
+  }
+}
+
+function scheduleChannelLostCheck(
+  pid: number,
+  project: string,
+  topicId: number,
+  label: string,
+  reason: string,
+): void {
+  const t = setTimeout(() => {
+    if (!pidAlive(pid)) return; // the console closed normally
+    for (const x of sessions.values()) if (x.pid === pid) return; // replaced (reload)
+    log("session.deaf", { project, pid, reason });
+    const now = Date.now();
+    if (now - (lastChannelLostNotice.get(topicId) ?? 0) < CHANNEL_LOST_COOLDOWN_MS) return;
+    lastChannelLostNotice.set(topicId, now);
+    void bot.api
+      .sendMessage(GROUP_CHAT_ID, channelLostNotice(label, reason), {
+        message_thread_id: topicId,
+      })
+      .catch(() => {});
+  }, CHANNEL_LOST_GRACE_MS);
+  (t as { unref?: () => void }).unref?.();
 }
 
 // A permission relay pending for any session on this project's topic → 🔔.
@@ -2064,18 +2110,36 @@ async function handle(req: Request): Promise<Response> {
       }
       return json({ messages });
     }
+    if (path === "/memwarn") {
+      const rssMb = Math.round(Number(body.rssMb) || 0);
+      log("mem.warn", { sid: s.id, project: s.project, rssMb });
+      if (!s.memWarned) {
+        s.memWarned = true;
+        void bot.api
+          .sendMessage(GROUP_CHAT_ID, memWarnNotice(s.label, rssMb), {
+            message_thread_id: s.topicId,
+          })
+          .catch(() => {});
+      }
+      return json({ ok: true });
+    }
+
     if (path === "/unregister") {
       const proj = s.project;
       const topicId = s.topicId;
+      const reason = typeof body.reason === "string" ? body.reason.slice(0, 120) : "";
       // A graceful shutdown can still leave undrained messages (arrived after
       // the session's last poll) — rescue them exactly like the reaper does
       // instead of deleting them with the session.
       const orphans = s.queue.splice(0, s.queue.length);
       unbindTopic(s.id, topicId);
       sessions.delete(s.id);
-      log("unregister", { sid: s.id, queued: orphans.length });
+      log("unregister", { sid: s.id, queued: orphans.length, reason });
       rescueOrphans(proj, topicId, orphans, (m) => s.soloMids.has(m.messageId));
       refreshTopicStatus(proj); // 💤 no session (or 📥 if messages are queued)
+      // Console still alive in a few seconds, with no replacement server for
+      // it → the session went deaf; tell the topic (see scheduleChannelLostCheck).
+      if (s.pid) scheduleChannelLostCheck(s.pid, proj, topicId, s.label, reason);
       return json({ ok: true });
     }
   } catch (e) {

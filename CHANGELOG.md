@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.20.23 — 2026-10-25
+
+- **The memory watchdog no longer kills the bridge.** Live outage: every
+  per-session MCP server self-terminated at RSS 1501 MB (`mem.restart` in
+  client.log — hh and system after 32.5 h, newrelic after 42.5 h, and finally
+  the leader, greensms_my, after 50 h). Claude Code never restarts a dead MCP
+  server, so each exit left a running console that had silently lost Telegram
+  (no inbound, no mirror); when the last one was the leader there was nobody to
+  take over and inbound was dead for hours. 31 such self-restarts since
+  2026-10-01 — the 0.20.13 "restart gracefully, autostart respawns" assumption
+  only ever held by killing the user's console on the next message. The
+  watchdog now never exits over memory: forced GC when elevated stays; past
+  1500 MB it logs `mem.high` once and asks the leader to post a one-time topic
+  heads-up (`⚠️ … grown to N MB … restart this console when convenient`).
+- **Heap snapshots name the leak.** The leak is ~30–40 MB/h in production,
+  role- and traffic-independent, and does not reproduce in isolation (3000
+  fast polls, 300 two-second long-polls and 5000 MCP ping ticks all stay flat).
+  `mem.sample` now goes to client.log every 30 min (10 min once
+  warned): RSS, JS heap, extra (native) memory, object counts and the ten
+  object types that grew most since the previous sample (`src/memstats.ts`,
+  tested) — enough to tell a JS-side leak (which type) from a native one.
+- **Leader: a console that outlived its server is reported.** `/unregister`
+  carries the shutdown reason (logged); if the session's claude process is still
+  alive 8 s later with no replacement server registered (a plugin reload has
+  one), the leader logs `session.deaf` and posts `⚠️ Session «…» lost its
+  Telegram link: its MCP server exited (reason) while the console is still
+  running …` with the way back (`/mcp` reconnect or restart; a new message
+  autostarts a fresh console). 5-minute cooldown per topic.
+
 ## 0.20.22 — 2026-10-23
 
 - **Activity hooks no longer get killed at 5s on a cold console start, and the
