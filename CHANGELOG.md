@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.20.24 — 2026-10-27
+
+- **The memory leak is named and fixed: parallel GC marker threads.** Two days
+  of `mem.sample` showed the JS heap flat at 7 MB / ~100k objects in every
+  follower while private bytes reached 4.5–7.8 GB (working set 0.9–1.7 GB) —
+  the growth was native. Per-second sampling of a live follower found a burst on
+  every poll cycle (~26 s): +8 threads, +50 MB, ~3 s of CPU, gone ~10 s later —
+  a collection with bun's default 8 GC markers, whose 7 helper threads idle out
+  between cycles and are respawned each time, leaving part of their memory and
+  a thread handle behind (2168 thread handles on 21 live threads). Followers
+  leaked ~200 MB/h of private bytes; the leader, whose helpers stay busy, about
+  a third. Replayed on a stub-leader harness: `BUN_JSC_numberOfGCMarkers=1`
+  removes the bursts entirely (JIT off and the GC timer off do not). The start
+  script now pins that option, and the forced `Bun.gc(true)` above 400 MB —
+  a second collection every 30 s that doubled the rate once a process crossed
+  it — is gone. `mem.sample` carries `gcMarkers` so the knob's presence is
+  visible per process. Applies to servers started after the update (new `cct`
+  or `/mcp` reconnect); running ones keep their rate.
+
 ## 0.20.23 — 2026-10-25
 
 - **The memory watchdog no longer kills the bridge.** Live outage: every

@@ -229,9 +229,11 @@ You never have to guess whether the bridge is alive:
   session's server exits while its console keeps running, the topic gets a
   `⚠️ Session «…» lost its Telegram link …` notice with the way back (`/mcp` →
   reconnect, or restart the console; a new message autostarts a fresh one). And
-  when a server's memory grows past 1.5 GB (a slow leak under investigation —
-  the server keeps working) you get a one-time `⚠️ … restart this console when
-  convenient`.
+  when a server's memory grows past 1.5 GB (the server keeps working) you get a
+  one-time `⚠️ … restart this console when convenient`. The leak that used to
+  get there in ~1.5 days — bun's parallel GC marker threads respawned every poll
+  cycle — is pinned off in the start script (`BUN_JSC_numberOfGCMarkers=1`,
+  0.20.24).
 
 ## Approving tool calls from Telegram
 

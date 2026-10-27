@@ -181,16 +181,27 @@ let inboundRunning = false;
 let inboundGen = 0;
 let inboundBeat = Date.now();
 const INBOUND_STALL_MS = 120_000;
-// Memory hygiene thresholds (MB). Above GC_TRIGGER a forced GC runs each
-// watchdog tick to reclaim bun's lazily-held heap. Above MEM_WARN the process
-// is clearly leaking (~30–40 MB/h in production, role- and traffic-independent)
-// — and it is NOT restarted: Claude Code never restarts a dead MCP server, so
-// the former self-exit only ever produced a console that had silently lost
-// Telegram (31 live instances; the last one was the leader, and the whole
-// bridge went deaf for hours with nobody left to take over). Instead the topic
-// gets a one-time heads-up and heap snapshots go to client.log (more often once
-// warned), so the leak can be named and fixed rather than papered over.
-const GC_TRIGGER_MB = 400;
+// Memory thresholds (MB). Above MEM_WARN the process has grown far beyond its
+// working set — and it is NOT restarted: Claude Code never restarts a dead MCP
+// server, so the former self-exit only ever produced a console that had
+// silently lost Telegram (31 live instances; the last one was the leader, and
+// the whole bridge went deaf for hours with nobody left to take over). Instead
+// the topic gets a one-time heads-up and heap snapshots go to client.log (more
+// often once warned).
+//
+// What the snapshots named (0.20.24): the JS heap never grew (7 MB, ~100k
+// objects, flat for two days) while private bytes reached 4.5–7.8 GB — the
+// growth is native. Every poll cycle (~26 s) a collection ran with bun's
+// default 8 parallel GC markers: the 7 helper threads are spawned fresh each
+// time (they idle out in ~10 s), each touches its own thread-local allocator
+// heap, and when it exits part of that memory and a thread handle linger —
+// 2168 thread handles for 21 live threads, +50 MB per cycle of which a few MB
+// never came back. Followers leaked ~200 MB/h of private bytes, the leader
+// (whose helpers stay busy) a third of that. The former forced GC above
+// 400 MB only added a second collection per 30 s and doubled the rate, so it
+// is gone; the start script pins BUN_JSC_numberOfGCMarkers=1 (no helper
+// threads at all — the heap is tiny, single-threaded marking is sub-ms), which
+// removed the bursts entirely on a harness replay.
 const MEM_WARN_MB = 1500;
 const MEM_SAMPLE_MS = 30 * 60_000;
 const MEM_SAMPLE_HIGH_MS = 10 * 60_000;
@@ -424,14 +435,11 @@ function startWatchdog(): void {
         process.stderr.write(`telegram-topics: inbound loop stopped: ${e}\n`);
       });
     }
-    // Memory diagnostics (see MEM_* above): forced GC when elevated, periodic
-    // heap snapshots, a one-time topic notice once clearly leaking. Never exits.
+    // Memory diagnostics (see MEM_* above): periodic heap snapshots and a
+    // one-time topic notice once clearly oversized. Never exits, never forces
+    // a collection (each one used to cost a burst of helper threads).
     try {
-      let rssMb = Math.round(process.memoryUsage().rss / 1048576);
-      if (rssMb > GC_TRIGGER_MB) {
-        Bun.gc(true);
-        rssMb = Math.round(process.memoryUsage().rss / 1048576);
-      }
+      const rssMb = Math.round(process.memoryUsage().rss / 1048576);
       const high = rssMb > MEM_WARN_MB;
       const now = Date.now();
       if (now - lastMemSampleAt >= (high ? MEM_SAMPLE_HIGH_MS : MEM_SAMPLE_MS)) {
@@ -440,6 +448,7 @@ function startWatchdog(): void {
         const counts = h.objectTypeCounts as TypeCounts;
         clientLog("mem.sample", {
           rssMb,
+          gcMarkers: process.env.BUN_JSC_numberOfGCMarkers ?? "default",
           heapMb: Math.round(h.heapSize / 1048576),
           extraMb: Math.round(h.extraMemorySize / 1048576),
           objects: h.objectCount,
