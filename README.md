@@ -189,13 +189,14 @@ Also:
   error instead of hanging.
 
 **Auto-mirror.** When a turn ends — started from Telegram or the terminal — the
-`Stop` hook (`hooks/mirror.ts`) posts the last text the session wrote in that
-turn to the topic: only that text, not everything the console showed. It stands
-down for a turn in which the session called `send_message`, `send_file` or
-`edit_message` (those messages are the reply); `react` does not count. Any text
-counts, even a note the model writes to itself, and a turn with no text posts
-nothing — keep that in mind if a project's `CLAUDE.md` tells Claude not to
-answer some messages. The channel instructions tell the model the same.
+`Stop` hook (`hooks/mirror.ts`) posts all the text the session wrote in that
+turn to the topic, block after block, as the console showed it (tool calls and
+their output are not posted). It stands down for a turn in which the session
+called `send_message`, `send_file` or `edit_message` (those messages are the
+reply); `react` does not count. Any text counts, including a note between tool
+calls or one the model writes to itself, and a turn with no text posts nothing —
+keep that in mind if a project's `CLAUDE.md` tells Claude not to answer some
+messages. The channel instructions tell the model the same.
 
 **Asking a question.** Claude Code's built-in multiple-choice UI (the terminal
 quiz) is *not* bridged to channels — a Telegram-only user never sees it. To ask a
