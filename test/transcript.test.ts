@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { finalAnswerText, lastAssistantText } from "../src/transcript.ts";
+import { finalAnswerText, lastAssistantText, turnTextBlocks } from "../src/transcript.ts";
 
 const line = (o: unknown) => JSON.stringify(o);
 const asst = (blocks: unknown[]) => line({ type: "assistant", message: { content: blocks } });
@@ -108,21 +108,82 @@ function reader(jsonl: string) {
   };
 }
 
-test("prefers the Stop payload's last_assistant_message and skips the transcript", () => {
-  const r = reader(asst([text("FROM TRANSCRIPT")]));
-  expect(finalAnswerText("From the payload.", r.read)).toBe("From the payload.");
-  expect(r.reads).toBe(0);
+test("mirrors every in-turn text block, not just the last (the fix)", () => {
+  // A multi-step turn: text → tool → text → tool → text. The console shows all
+  // three blocks; the mirror must too (byte-for-byte console ↔ Telegram).
+  const jsonl = [
+    userPrompt("diagnose"),
+    asst([text("Результат теста: ноль входящих."), tool("Bash")]),
+    toolResult(),
+    asst([text("Два варианта: A или B."), tool("Bash")]),
+    toolResult(),
+    asst([text("Вердикт: приём не настроен.")]),
+  ].join("\n");
+  expect(finalAnswerText("Вердикт: приём не настроен.", reader(jsonl).read)).toBe(
+    "Результат теста: ноль входящих.\n\nДва варианта: A или B.\n\nВердикт: приём не настроен.",
+  );
 });
 
-test("payload wins over a transcript that has not caught up yet (the race)", () => {
+test("the whole turn is read, including blocks the payload omits", () => {
+  // The payload only ever carries the LAST message; earlier blocks come from the
+  // transcript, so the transcript is always consulted.
+  const r = reader(
+    [userPrompt("q"), asst([text("earlier"), tool("Read")]), toolResult(), asst([text("last")])].join("\n"),
+  );
+  expect(finalAnswerText("last", r.read)).toBe("earlier\n\nlast");
+  expect(r.reads).toBe(1);
+});
+
+test("does not duplicate the final block when the payload equals it", () => {
+  const jsonl = [
+    userPrompt("q"),
+    asst([text("Step one."), tool("Read")]),
+    toolResult(),
+    asst([text("Final.")]),
+  ].join("\n");
+  expect(finalAnswerText("Final.", reader(jsonl).read)).toBe("Step one.\n\nFinal.");
+});
+
+test("multi-text-block final message is not duplicated (whitespace-insensitive match)", () => {
+  // Claude Code joins the final message's text blocks its own way for the payload;
+  // the transcript joins that same message with '' in one entry. Compared with
+  // whitespace stripped, the payload is recognised as already present.
+  const jsonl = asst([text("Part one. "), text("Part two.")]);
+  expect(finalAnswerText("Part one.\nPart two.", reader(jsonl).read)).toBe("Part one. Part two.");
+});
+
+test("backfills the final answer from the payload when the JSONL has not caught up (race)", () => {
   // Stop fired before the final entry hit the JSONL: the tail still ends at an
-  // in-turn narration + tool call, so the transcript alone would mirror that.
+  // in-turn block + tool call. The earlier block is kept (the console showed it)
+  // and the payload supplies the missing final answer.
   const stale = [userPrompt("q"), asst([text("Let me check."), tool("Read")]), toolResult()].join("\n");
   expect(lastAssistantText(stale)).toBe("Let me check.");
-  expect(finalAnswerText("The real answer.", reader(stale).read)).toBe("The real answer.");
-  // ...and with nothing of this turn on disk yet it would mirror nothing at all.
+  expect(finalAnswerText("The real answer.", reader(stale).read)).toBe("Let me check.\n\nThe real answer.");
+  // ...and with nothing of this turn on disk yet, the payload alone is mirrored.
   const empty = [userPrompt("q1"), asst([text("OLD")]), userPrompt("q2")].join("\n");
   expect(finalAnswerText("NEW", reader(empty).read)).toBe("NEW");
+});
+
+test("turn-bounded across multiple blocks: never reaches a previous turn", () => {
+  const jsonl = [
+    userPrompt("q1"),
+    asst([text("PRIOR ANSWER")]),
+    userPrompt("q2"),
+    asst([text("now A"), tool("Bash")]),
+    toolResult(),
+    asst([text("now B")]),
+  ].join("\n");
+  expect(finalAnswerText("now B", reader(jsonl).read)).toBe("now A\n\nnow B");
+});
+
+test("turnTextBlocks returns the turn's text blocks in chronological order", () => {
+  const jsonl = [
+    userPrompt("q"),
+    asst([text("one"), tool("Read")]),
+    toolResult(),
+    asst([think("x"), text("two")]),
+  ].join("\n");
+  expect(turnTextBlocks(jsonl)).toEqual(["one", "two"]);
 });
 
 test("missing field falls back to the transcript (older Claude Code)", () => {

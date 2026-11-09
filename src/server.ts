@@ -27,6 +27,8 @@ import { assertSendable } from "./access.ts";
 import { stopLeader } from "./leader.ts";
 import { waitForClientReady } from "./ready.ts";
 import { clientLog } from "./clientlog.ts";
+import { heapStats } from "bun:jsc";
+import { renderTypeDeltas, topTypeDeltas, type TypeCounts } from "./memstats.ts";
 import * as channel from "./client.ts";
 import type { Inbound } from "./leader.ts";
 
@@ -179,12 +181,30 @@ let inboundRunning = false;
 let inboundGen = 0;
 let inboundBeat = Date.now();
 const INBOUND_STALL_MS = 120_000;
-// Memory hygiene thresholds (MB). Above GC_TRIGGER a forced GC runs each
-// watchdog tick to reclaim bun's lazily-held heap; if RSS still exceeds
-// RSS_RESTART afterwards it is a genuine leak (the follower poll loop grows over
-// days), so the process restarts gracefully and autostart respawns a fresh one.
-const GC_TRIGGER_MB = 400;
-const RSS_RESTART_MB = 1500;
+// Memory thresholds (MB). Above MEM_WARN the process has grown far beyond its
+// working set — and it is NOT restarted: Claude Code never restarts a dead MCP
+// server, so the former self-exit only ever produced a console that had
+// silently lost Telegram (31 live instances; the last one was the leader, and
+// the whole bridge went deaf for hours with nobody left to take over). Instead
+// the topic gets a one-time heads-up and heap snapshots go to client.log (more
+// often once warned).
+//
+// What the snapshots named (0.20.24): the JS heap never grew (7 MB, ~100k
+// objects, flat for two days) while private bytes reached 4.5–7.8 GB — the
+// growth is native. Every poll cycle (~26 s) a collection ran with bun's
+// default 8 parallel GC markers: the 7 helper threads are spawned fresh each
+// time (they idle out in ~10 s), each touches its own thread-local allocator
+// heap, and when it exits part of that memory and a thread handle linger —
+// 2168 thread handles for 21 live threads, +50 MB per cycle of which a few MB
+// never came back. Followers leaked ~200 MB/h of private bytes, the leader
+// (whose helpers stay busy) a third of that. The former forced GC above
+// 400 MB only added a second collection per 30 s and doubled the rate, so it
+// is gone; the start script pins BUN_JSC_numberOfGCMarkers=1 (no helper
+// threads at all — the heap is tiny, single-threaded marking is sub-ms), which
+// removed the bursts entirely on a harness replay.
+const MEM_WARN_MB = 1500;
+const MEM_SAMPLE_MS = 30 * 60_000;
+const MEM_SAMPLE_HIGH_MS = 10 * 60_000;
 
 async function runInboundLoop(): Promise<void> {
   inboundRunning = true;
@@ -355,7 +375,7 @@ function shutdown(reason: string): void {
   // Goodbye BEFORE the exit deadline: frees this session's topic on the leader
   // immediately, so the next inbound triggers autostart instead of being
   // queued to a corpse (fire-and-forget; the tightened idle reaper backstops).
-  channel.unregister();
+  channel.unregister(reason);
   try {
     stopLeader();
   } catch {
@@ -373,6 +393,9 @@ function shutdown(reason: string): void {
 // /reload-plugins left the old leader running, holding the bot and the port).
 let pingArmed = false;
 let pingStrikes = 0;
+let lastMemSampleAt = 0;
+let prevTypeCounts: TypeCounts | null = null;
+let memWarned = false;
 function startWatchdog(): void {
   const ppid = process.ppid;
   const t = setInterval(async () => {
@@ -412,22 +435,35 @@ function startWatchdog(): void {
         process.stderr.write(`telegram-topics: inbound loop stopped: ${e}\n`);
       });
     }
-    // Memory hygiene: the follower poll loop leaks bun runtime state over days
-    // (live: servers grew to multiple GB). Force a GC when the heap is elevated;
-    // if RSS is still large afterwards it is a genuine leak, so restart the
-    // process — the graceful shutdown unregisters and autostart respawns a
-    // fresh, small server on the next message.
+    // Memory diagnostics (see MEM_* above): periodic heap snapshots and a
+    // one-time topic notice once clearly oversized. Never exits, never forces
+    // a collection (each one used to cost a burst of helper threads).
     try {
-      if (process.memoryUsage().rss / 1048576 > GC_TRIGGER_MB) {
-        (globalThis as { Bun?: { gc?: (force: boolean) => void } }).Bun?.gc?.(true);
-        const rssMb = Math.round(process.memoryUsage().rss / 1048576);
-        if (pingArmed && rssMb > RSS_RESTART_MB) {
-          clientLog("mem.restart", { rssMb });
-          return shutdown(`rss ${rssMb}MB over ${RSS_RESTART_MB}MB`);
-        }
+      const rssMb = Math.round(process.memoryUsage().rss / 1048576);
+      const high = rssMb > MEM_WARN_MB;
+      const now = Date.now();
+      if (now - lastMemSampleAt >= (high ? MEM_SAMPLE_HIGH_MS : MEM_SAMPLE_MS)) {
+        lastMemSampleAt = now;
+        const h = heapStats();
+        const counts = h.objectTypeCounts as TypeCounts;
+        clientLog("mem.sample", {
+          rssMb,
+          gcMarkers: process.env.BUN_JSC_numberOfGCMarkers ?? "default",
+          heapMb: Math.round(h.heapSize / 1048576),
+          extraMb: Math.round(h.extraMemorySize / 1048576),
+          objects: h.objectCount,
+          protectedObjects: h.protectedObjectCount,
+          top: renderTypeDeltas(topTypeDeltas(prevTypeCounts, counts, 10)),
+        });
+        prevTypeCounts = counts;
+      }
+      if (high && pingArmed && !memWarned) {
+        memWarned = true;
+        clientLog("mem.high", { rssMb });
+        void channel.memWarn(rssMb).catch(() => {});
       }
     } catch {
-      // memoryUsage/Bun.gc unavailable — skip
+      // heapStats/memoryUsage unavailable — skip
     }
   }, 30_000);
   (t as { unref?: () => void }).unref?.();

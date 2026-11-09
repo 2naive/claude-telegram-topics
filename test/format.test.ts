@@ -168,6 +168,31 @@ describe("mdToTelegram", () => {
     }
   });
 
+  test("double-marker bold/strike opens before punctuation (#, @, parens) — was leaking literal **", () => {
+    // Live: `**#102 → SirKliv:**` reached Telegram as a literal `**` because the
+    // opener required a letter/digit/emoji; a double marker is unambiguous enough
+    // to open before the punctuation a model actually bolds (PR refs, mentions).
+    const cases: [string, string][] = [
+      ["**#102 → SirKliv:**", "#102 → SirKliv:"],
+      ["**@n.gryadovkin**", "@n.gryadovkin"],
+      ["**(note)**", "(note)"],
+      ["drop ~~#63~~ now", "drop #63 now"],
+    ];
+    for (const [src, text] of cases) {
+      const r = mdToTelegram(src);
+      expect(r.text).toBe(text);
+      expect((r.entities ?? []).length).toBeGreaterThan(0);
+    }
+  });
+
+  test("the slash exclusion still keeps globs literal after the punctuation relaxation", () => {
+    for (const src of ["webpack **/dist/** and **/build/**", "ignore **/*.js and **/*.ts"]) {
+      const r = mdToTelegram(src);
+      expect(r.text).toBe(src);
+      expect(r.entities).toBeUndefined();
+    }
+  });
+
   test("a trailing colon inside bold still bolds (**Заголовок:**)", () => {
     const r = mdToTelegram("**Заголовок:** текст");
     expect(r.text).toBe("Заголовок: текст");

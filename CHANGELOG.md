@@ -1,5 +1,130 @@
 # Changelog
 
+## 0.20.24 — 2026-10-27
+
+- **The memory leak is named and fixed: parallel GC marker threads.** Two days
+  of `mem.sample` showed the JS heap flat at 7 MB / ~100k objects in every
+  follower while private bytes reached 4.5–7.8 GB (working set 0.9–1.7 GB) —
+  the growth was native. Per-second sampling of a live follower found a burst on
+  every poll cycle (~26 s): +8 threads, +50 MB, ~3 s of CPU, gone ~10 s later —
+  a collection with bun's default 8 GC markers, whose 7 helper threads idle out
+  between cycles and are respawned each time, leaving part of their memory and
+  a thread handle behind (2168 thread handles on 21 live threads). Followers
+  leaked ~200 MB/h of private bytes; the leader, whose helpers stay busy, about
+  a third. Replayed on a stub-leader harness: `BUN_JSC_numberOfGCMarkers=1`
+  removes the bursts entirely (JIT off and the GC timer off do not). The start
+  script now pins that option, and the forced `Bun.gc(true)` above 400 MB —
+  a second collection every 30 s that doubled the rate once a process crossed
+  it — is gone. `mem.sample` carries `gcMarkers` so the knob's presence is
+  visible per process. Applies to servers started after the update (new `cct`
+  or `/mcp` reconnect); running ones keep their rate.
+
+## 0.20.23 — 2026-10-25
+
+- **The memory watchdog no longer kills the bridge.** Live outage: every
+  per-session MCP server self-terminated at RSS 1501 MB (`mem.restart` in
+  client.log — hh and system after 32.5 h, newrelic after 42.5 h, and finally
+  the leader, greensms_my, after 50 h). Claude Code never restarts a dead MCP
+  server, so each exit left a running console that had silently lost Telegram
+  (no inbound, no mirror); when the last one was the leader there was nobody to
+  take over and inbound was dead for hours. 31 such self-restarts since
+  2026-10-01 — the 0.20.13 "restart gracefully, autostart respawns" assumption
+  only ever held by killing the user's console on the next message. The
+  watchdog now never exits over memory: forced GC when elevated stays; past
+  1500 MB it logs `mem.high` once and asks the leader to post a one-time topic
+  heads-up (`⚠️ … grown to N MB … restart this console when convenient`).
+- **Heap snapshots name the leak.** The leak is ~30–40 MB/h in production,
+  role- and traffic-independent, and does not reproduce in isolation (3000
+  fast polls, 300 two-second long-polls and 5000 MCP ping ticks all stay flat).
+  `mem.sample` now goes to client.log every 30 min (10 min once
+  warned): RSS, JS heap, extra (native) memory, object counts and the ten
+  object types that grew most since the previous sample (`src/memstats.ts`,
+  tested) — enough to tell a JS-side leak (which type) from a native one.
+- **Leader: a console that outlived its server is reported.** `/unregister`
+  carries the shutdown reason (logged); if the session's claude process is still
+  alive 8 s later with no replacement server registered (a plugin reload has
+  one), the leader logs `session.deaf` and posts `⚠️ Session «…» lost its
+  Telegram link: its MCP server exited (reason) while the console is still
+  running …` with the way back (`/mcp` reconnect or restart; a new message
+  autostarts a fresh console). 5-minute cooldown per topic.
+
+## 0.20.22 — 2026-10-23
+
+- **Activity hooks no longer get killed at 5s on a cold console start, and the
+  per-tool-call heartbeat runs in the background.** Live incident (`hh`,
+  autostarted with `--continue` on two held messages): the console printed
+  `UserPromptSubmit hook [bun ".../hooks/activity.ts" start] timed out after 5s
+  — output discarded`. The hook itself is cheap (~0.33s idle: bun startup
+  ~0.28s, `git rev-parse` 0.04s, POST ≤0.3s), but `leader.log` shows the first
+  `start` after an autostart landing 2.2s / 3.2s / 4.8s / 14.0s after the held
+  drain — a `--continue` console resuming a big transcript starves every child
+  process, and the 5s cap (Claude Code's own default for UserPromptSubmit is
+  30s) killed the hook and discarded its signal. Every hook now has
+  `timeout: 15` (the script bounds itself at git 3s + fetch 0.3s, so the cap
+  only bites when the machine is starved — and then waiting beats discarding),
+  and the `PreToolUse` heartbeat is `"async": true`, so Claude Code no longer
+  waits ~0.3s on it before every tool call. Turn-boundary hooks (`start`,
+  `idle`, `failed`, mirror) stay synchronous: their order matters (`start`
+  must land before the turn's first `send_message`). Pinned by
+  `test/hooks.test.ts`.
+- **Leader: draining the held inbox into a fresh session now begins the turn
+  properly** (`beginTurn`: clear `spokeThisTurn` + `lastMirrored`, show ⏳) —
+  the same as the live inbound route and the `start` hook. `spokeThisTurn` is
+  keyed by PROJECT and outlives sessions, so a project whose previous session
+  ended its turn with `send_message` (buttons) and is then autostarted on held
+  messages depended entirely on the `start` hook to re-arm the auto-mirror —
+  exactly the hook a cold start kills. The incident survived only because the
+  second drained message's hook got through; a single held message would have
+  left the answer unmirrored (🟢 badge, no reply on the phone).
+
+## 0.20.21 — 2026-10-22
+
+- **The mirror now posts the WHOLE turn, not just its last block — multi-step
+  answers no longer arrive truncated on the phone.** Live incident (`greensms_sip`):
+  a turn ran text → tool → text → tool → text ("Результат теста…" → `tcpdump` →
+  "Два варианта…" → capture → "Вердикт…"); the console showed all three blocks but
+  Telegram got only the final one, so the substance ("what I found", "the two
+  options") was silently dropped. The Stop hook took the turn's LAST assistant
+  message by design, on the assumption that earlier in-turn text is throwaway
+  narration ("let me check…") — false for sessions where each block between tool
+  calls is real content. `finalAnswerText` now reconstructs every in-turn text
+  block from the transcript (bounded at the turn's user prompt) and joins them
+  with blank lines, matching the console byte-for-byte. The Stop payload's
+  `last_assistant_message` is kept only to BACKFILL the final block when the JSONL
+  write lags behind Stop (the race PR #6 fixed), appended only when it is not
+  already the turn's last block — compared whitespace-insensitively so a
+  multi-text-block final message is not duplicated. Degrades to payload-only if the
+  transcript is unreadable. 298 tests.
+
+## 0.20.20 — 2026-10-20
+
+- **Bold/strikethrough that starts with punctuation now renders (no more literal
+  `**`).** A `**#102 → …**` or `**@user**` reached Telegram as a literal `**`:
+  the emphasis opener required the content to start with a letter, digit, emoji
+  or quote, so a double marker before `#`, `@`, `(`, `$`, … never opened. The
+  opener now splits by marker width — a SINGLE `*`/`_` keeps the strict whitelist
+  (it lives in globs/paths/math: `*.log`, `2 * 3`, `a_b`, `C:\_temp_`), while a
+  DOUBLE `**`/`~~` is unambiguous and opens before any non-space content except a
+  slash. The slash exclusion keeps `**/dist/**` and `**/*.js` literal; `x**2`,
+  `2 ** 3 ** 4` and the other code-shapes stay literal as before (guarded by the
+  outer-word/whitespace rules). 293 tests.
+
+## 0.20.19 — 2026-10-09
+
+- **Autostart consoles no longer die with "'bun' is not recognized".** Live
+  incident: a message to `telebot` autostarted a console whose telegram-topics
+  MCP server failed to launch — the server starts via the bare command `bun`
+  (`.mcp.json`), resolved on the console's PATH, but an autostart console
+  inherits the long-lived leader's in-memory PATH, which lacked bun's dir. The
+  server never connected, the channel stayed dead, and both inbound messages
+  were silently lost. Same stale-PATH class the absolute `claude` path
+  (`resolveClaudeBin`, 0.20.14) closed for the launch command — now closed for
+  `bun` too: the spawn prepends bun's dir (and claude's) to the console's PATH
+  (`set "PATH=…;%PATH%"`), via new `resolveBunDir` / `launchPathPrefix`. Falls
+  back to the inherited PATH untouched when neither resolves (no regression).
+  `TG_TOPICS_BUN_DIR` overrides. Applies to leader-spawned (autostart / Start
+  session) consoles; manually launched sessions were never affected.
+
 ## 0.20.18 — 2026-10-09
 
 - **Forwarded native rich messages are now readable (the content, not
