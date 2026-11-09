@@ -13,6 +13,8 @@ import {
   spawnSession,
   discoverLaunchable,
   resolveClaudeBin,
+  resolveBunDir,
+  launchPathPrefix,
 } from "../src/spawn.ts";
 import { normalizePath } from "../src/paths.ts";
 
@@ -86,6 +88,48 @@ describe("buildLaunchPs (non-inheriting launcher)", () => {
     expect(line).toContain("'title tg_x & claude --note ''hi'''");
     expect(line).toContain("-WorkingDirectory 'C:\\O''Brien'");
   });
+
+  test("a pathPrefix prepends a cmd `set PATH` so a bare `bun` resolves", () => {
+    // The MCP server launches via bare `bun` (.mcp.json); an autostart console
+    // inherits the leader's stale PATH and dies with "'bun' is not recognized".
+    const line = buildLaunchPs("tg_x", "claude --flag", "C:\\Proj\\X", "C:\\dir\\npm");
+    expect(line).toContain(`'set "PATH=C:\\dir\\npm;%PATH%" & title tg_x & claude --flag'`);
+  });
+
+  test("no pathPrefix (default) leaves the line exactly as before — no regression", () => {
+    const line = buildLaunchPs("tg_x", "claude --flag", "C:\\Proj\\X");
+    expect(line).not.toContain("set \"PATH=");
+    expect(line).toContain("'title tg_x & claude --flag'");
+  });
+});
+
+describe("resolveBunDir (so the spawned MCP server's bare `bun` resolves)", () => {
+  test("TG_TOPICS_BUN_DIR is used when it holds a bun shim", () => {
+    const dir = mkdtempSync(join(tmpdir(), "TgBun-"));
+    writeFileSync(join(dir, "bun.cmd"), "x");
+    const prev = process.env.TG_TOPICS_BUN_DIR;
+    try {
+      process.env.TG_TOPICS_BUN_DIR = dir;
+      expect(resolveBunDir()).toBe(dir);
+    } finally {
+      if (prev === undefined) delete process.env.TG_TOPICS_BUN_DIR;
+      else process.env.TG_TOPICS_BUN_DIR = prev;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("an override dir without a bun shim is ignored (never returned)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "TgBunEmpty-"));
+    const prev = process.env.TG_TOPICS_BUN_DIR;
+    try {
+      process.env.TG_TOPICS_BUN_DIR = dir; // exists, but no bun.exe/.cmd inside
+      expect(resolveBunDir()).not.toBe(dir);
+    } finally {
+      if (prev === undefined) delete process.env.TG_TOPICS_BUN_DIR;
+      else process.env.TG_TOPICS_BUN_DIR = prev;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("spawnSession mechanics", () => {
@@ -110,7 +154,9 @@ describe("spawnSession mechanics", () => {
             "powershell",
             "-NoProfile",
             "-Command",
-            buildLaunchPs("tg_x", launchCommand(true), canon),
+            // includes launchPathPrefix() — bun's dir on PATH so the MCP
+            // server's bare `bun` resolves under a stale inherited leader PATH.
+            buildLaunchPs("tg_x", launchCommand(true), canon, launchPathPrefix()),
           ]);
           expect(opts.windowsVerbatimArguments).toBeUndefined();
         } finally {

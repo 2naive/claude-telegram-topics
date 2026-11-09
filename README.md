@@ -214,8 +214,9 @@ You never have to guess whether the bridge is alive:
   **🔔 needs you** (a permission prompt is waiting) · **📥 queued** (messages
   held, no session) · **💤 no session** (the CLI isn't running). Working/idle
   comes from the plugin's activity hooks (`hooks/hooks.json`, auto-active) plus
-  the leader's own signal for Telegram-driven turns; it flips per turn. Set
-  `TG_TOPICS_STATUS_ICONS=0` to keep topic names unbadged.
+  the leader's own signal for Telegram-driven turns; it flips per turn. The
+  per-tool-call heartbeat is a background (`async`) hook, so tool calls never
+  wait on it. Set `TG_TOPICS_STATUS_ICONS=0` to keep topic names unbadged.
 - **`/status`** (in any topic, or General) — the leader itself answers with its
   version, pid and uptime, then **one line per bridged project** (its glyph +
   name + session labels, or `N queued, no session`, or `no session`) and a
@@ -235,6 +236,15 @@ You never have to guess whether the bridge is alive:
   failure isn't silent (the badge would otherwise just fall back to 🟢). Detected
   via the `StopFailure` hook. Note: a *user interrupt* (Esc), a hang, or a hard
   crash fire no Claude Code hook, so those aren't signalled.
+- **Bridge lost?** Claude Code never restarts a dead MCP server, so if a
+  session's server exits while its console keeps running, the topic gets a
+  `⚠️ Session «…» lost its Telegram link …` notice with the way back (`/mcp` →
+  reconnect, or restart the console; a new message autostarts a fresh one). And
+  when a server's memory grows past 1.5 GB (the server keeps working) you get a
+  one-time `⚠️ … restart this console when convenient`. The leak that used to
+  get there in ~1.5 days — bun's parallel GC marker threads respawned every poll
+  cycle — is pinned off in the start script (`BUN_JSC_numberOfGCMarkers=1`,
+  0.20.24).
 
 ## Approving tool calls from Telegram
 

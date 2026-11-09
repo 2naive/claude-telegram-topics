@@ -12,7 +12,15 @@
 //
 // CONTRACT: this runs on every prompt and every tool call, so it MUST be
 // fire-and-forget — a 300ms timeout, all errors swallowed, always exit 0. It
-// must never delay or fail a turn.
+// must never delay or fail a turn. Its own worst case is bounded (git 3s +
+// fetch 0.3s + bun startup, ~0.33s idle) and sits well under the hooks.json
+// `timeout` (15s), so that timeout only fires when the whole machine is starved
+// — a `--continue` console cold-starting a big transcript (2–14s observed) —
+// and then waiting beats discarding the signal. The PreToolUse heartbeat is
+// `async` (Claude Code doesn't wait for it), so tool calls don't pay its
+// startup; the turn-boundary hooks stay synchronous because their ORDER
+// matters (start before the turn's first send_message, idle before the next
+// start).
 
 import { keyFromCwd } from "../src/projectkey.ts";
 import { resolvePort } from "./port.ts";

@@ -61,6 +61,7 @@ import {
   LEADER_IDLE_TIMEOUT_SEC,
   POLL_MAX_SEC,
 } from "./routing.ts";
+import { channelLostNotice, memWarnNotice } from "./routing.ts";
 import {
   flushSent,
   loadSent,
@@ -120,6 +121,8 @@ type Session = {
    * leader attribute an auto-mirrored answer to this session so a reply to it
    * routes back here instead of fanning out. Absent on pre-0.20.3 clients. */
   claudeSessionId?: string;
+  /** A memory heads-up was already posted for this session (one per session). */
+  memWarned?: boolean;
 };
 
 const INBOX_DIR = join(STATE_DIR, "inbox");
@@ -563,6 +566,49 @@ function notifyTurnFailed(project: string): void {
       { message_thread_id: topicId },
     )
     .catch(() => {});
+}
+
+// A session's MCP server exited while its console is still running: that
+// console has silently lost Telegram (no inbound, no mirror) and Claude Code
+// never restarts a dead MCP server. Say so in the topic — this class of outage
+// was invisible until the user noticed the silence (live: four sessions over
+// two days, the last one the leader, leaving the whole bridge deaf). Checked a
+// few seconds after the goodbye: a console closing normally is gone by then,
+// and a plugin reload has registered its replacement server (same pid).
+const CHANNEL_LOST_GRACE_MS = 8_000;
+const CHANNEL_LOST_COOLDOWN_MS = 5 * 60_000;
+const lastChannelLostNotice = new Map<number, number>();
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as { code?: string }).code === "EPERM";
+  }
+}
+
+function scheduleChannelLostCheck(
+  pid: number,
+  project: string,
+  topicId: number,
+  label: string,
+  reason: string,
+): void {
+  const t = setTimeout(() => {
+    if (!pidAlive(pid)) return; // the console closed normally
+    for (const x of sessions.values()) if (x.pid === pid) return; // replaced (reload)
+    log("session.deaf", { project, pid, reason });
+    const now = Date.now();
+    if (now - (lastChannelLostNotice.get(topicId) ?? 0) < CHANNEL_LOST_COOLDOWN_MS) return;
+    lastChannelLostNotice.set(topicId, now);
+    void bot.api
+      .sendMessage(GROUP_CHAT_ID, channelLostNotice(label, reason), {
+        message_thread_id: topicId,
+      })
+      .catch(() => {});
+  }, CHANNEL_LOST_GRACE_MS);
+  (t as { unref?: () => void }).unref?.();
 }
 
 // A permission relay pending for any session on this project's topic → 🔔.
@@ -1098,9 +1144,7 @@ function initBot(): void {
       // (the Stop hook still returns it to ready). No-op if the topic is unmapped.
       const proj = projectForTopic(topicId);
       if (proj) {
-        spokeThisTurn.delete(proj); // new turn — the session hasn't spoken yet
-        lastMirrored.delete(proj);
-        setActivity(proj, "working");
+        beginTurn(proj);
         checkHookless(proj, topicId); // warn if this session has no auto-mirror
       }
     }
@@ -1438,6 +1482,17 @@ const MIRROR_MAX_CHUNKS = 4;
 // Last text mirrored per project, so a re-fired Stop (stop_hook_active) does not
 // double-post identical text. Cleared at each turn start.
 const lastMirrored = new Map<string, string>();
+
+// A turn is starting for `project`: whatever the session said LAST turn no
+// longer stands the auto-mirror down, a fresh answer may legitimately repeat
+// the previous one, and the badge shows ⏳. Every turn-starting path goes
+// through here — the live inbound route, the held-inbox drain at register and
+// the start hook — so the mirror never hinges on the activity hook alone.
+function beginTurn(project: string): void {
+  spokeThisTurn.delete(project);
+  lastMirrored.delete(project);
+  setActivity(project, "working");
+}
 // Cooldown for the "mirror incomplete" notice, so a persistent outage does not
 // itself flood the topic.
 const lastMirrorNotice = new Map<number, number>();
@@ -1760,13 +1815,8 @@ async function handle(req: Request): Promise<Response> {
       lastActivityAt.set(project, Date.now());
       clearPendingConfirm(project);
       if (state === "failed") notifyTurnFailed(project);
-      else if (state === "start") {
-        // Turn boundary (UserPromptSubmit) — the session hasn't spoken yet, and
-        // a fresh answer may legitimately repeat the previous one.
-        spokeThisTurn.delete(project);
-        lastMirrored.delete(project);
-        setActivity(project, "working");
-      } else setActivity(project, state === "idle" ? "idle" : "working");
+      else if (state === "start") beginTurn(project); // turn boundary (UserPromptSubmit)
+      else setActivity(project, state === "idle" ? "idle" : "working");
     }
     return json({ ok: true });
   }
@@ -1880,10 +1930,13 @@ async function handle(req: Request): Promise<Response> {
       // Drained messages go to THIS session only — no fan-out copies exist.
       for (const m of held.msgs) fresh.soloMids.add(m.messageId);
       log("held.drained", { sid: id, project, count: held.msgs.length });
-      // The new session is about to process the drained queue — show ⏳ (the
-      // Stop hook / TTL returns it to 🟢). Covers the case where the activity
-      // hook may not fire for queued channel messages.
-      if (held.msgs.length > 0) setActivity(project, "working");
+      // The new session is about to process the drained queue — begin the turn
+      // here (⏳ + re-arm the auto-mirror; the Stop hook / TTL returns it to 🟢).
+      // Can't lean on the start hook: on a cold, starved console start it may be
+      // killed by its timeout, and `spokeThisTurn` is keyed by PROJECT — a
+      // previous session's send_message would otherwise stand the mirror down
+      // for this session's first answer (phone shows 🟢, no reply).
+      if (held.msgs.length > 0) beginTurn(project);
     }
     // A registration keyed to the config dir is almost always the process.cwd()
     // fallback (identity race), not a real project — the client self-heals by
@@ -2057,18 +2110,36 @@ async function handle(req: Request): Promise<Response> {
       }
       return json({ messages });
     }
+    if (path === "/memwarn") {
+      const rssMb = Math.round(Number(body.rssMb) || 0);
+      log("mem.warn", { sid: s.id, project: s.project, rssMb });
+      if (!s.memWarned) {
+        s.memWarned = true;
+        void bot.api
+          .sendMessage(GROUP_CHAT_ID, memWarnNotice(s.label, rssMb), {
+            message_thread_id: s.topicId,
+          })
+          .catch(() => {});
+      }
+      return json({ ok: true });
+    }
+
     if (path === "/unregister") {
       const proj = s.project;
       const topicId = s.topicId;
+      const reason = typeof body.reason === "string" ? body.reason.slice(0, 120) : "";
       // A graceful shutdown can still leave undrained messages (arrived after
       // the session's last poll) — rescue them exactly like the reaper does
       // instead of deleting them with the session.
       const orphans = s.queue.splice(0, s.queue.length);
       unbindTopic(s.id, topicId);
       sessions.delete(s.id);
-      log("unregister", { sid: s.id, queued: orphans.length });
+      log("unregister", { sid: s.id, queued: orphans.length, reason });
       rescueOrphans(proj, topicId, orphans, (m) => s.soloMids.has(m.messageId));
       refreshTopicStatus(proj); // 💤 no session (or 📥 if messages are queued)
+      // Console still alive in a few seconds, with no replacement server for
+      // it → the session went deaf; tell the topic (see scheduleChannelLostCheck).
+      if (s.pid) scheduleChannelLostCheck(s.pid, proj, topicId, s.label, reason);
       return json({ ok: true });
     }
   } catch (e) {

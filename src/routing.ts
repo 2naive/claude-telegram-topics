@@ -560,3 +560,24 @@ export function richMessageToText(rich: unknown): string {
   if (rich == null || typeof rich !== "object") return "";
   return richBlocksToText((rich as Record<string, unknown>).blocks).trim();
 }
+
+/**
+ * Topic notice when a session's MCP server exited while its console is still
+ * running: that console has silently lost Telegram (no inbound, no mirror) and
+ * Claude Code will not bring the server back on its own.
+ */
+export function channelLostNotice(label: string, reason: string): string {
+  const who = label ? `Session «${label}»` : "This session";
+  const why = reason ? ` (${reason})` : "";
+  return (
+    `⚠️ ${who} lost its Telegram link: its MCP server exited${why} while the console is still running. ` +
+    "Until it is reconnected (/mcp → telegram-topics → reconnect) or restarted, messages here won't reach it " +
+    "and its answers won't be mirrored — a new message here autostarts a fresh console instead (the old one is closed)."
+  );
+}
+
+/** Topic notice when a session's server has grown past the memory warn mark. */
+export function memWarnNotice(label: string, rssMb: number): string {
+  const who = label ? `Session «${label}»` : "This session";
+  return `⚠️ ${who}: its Telegram bridge process has grown to ${rssMb} MB (a slow leak; it keeps working). Restart this console when convenient.`;
+}
