@@ -53,6 +53,8 @@ import {
   truncate,
   withSavedPath,
   richMessageToText,
+  replyContext,
+  type ReplyMessage,
   withStatusGlyph,
   statusGlyph,
   computeTopicStatus,
@@ -90,7 +92,16 @@ import { loadHeld, persistHeld, flushHeld } from "./held.ts";
 import { log } from "./log.ts";
 
 export type Inbound =
-  | { type: "message"; from: string; text: string; messageId: number; ts: number }
+  | {
+      type: "message";
+      from: string;
+      text: string;
+      messageId: number;
+      ts: number;
+      /** The message this one replies to, and a short quote of it (replyContext). */
+      replyTo?: number;
+      replyQuote?: string;
+    }
   | { type: "callback"; from: string; data: string; messageId: number; ts: number }
   | { type: "reaction"; from: string; emoji: string; messageId: number; ts: number }
   | { type: "permission"; requestId: string; behavior: "allow" | "deny"; messageId: number; ts: number };
@@ -1121,12 +1132,14 @@ function initBot(): void {
       }
     }
 
+    const reply = replyContext(m as unknown as ReplyMessage);
     const inbound: Inbound = {
       type: "message",
       from,
       text,
       messageId: m.message_id,
       ts: Date.now(),
+      ...(reply ? { replyTo: reply.id, replyQuote: reply.quote } : {}),
     };
     // A reply to a specific session's message routes only to that session; a
     // fresh (non-reply) message still fans to every session on the topic.
