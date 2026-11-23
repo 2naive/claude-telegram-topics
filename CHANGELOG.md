@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.21.1 — 2026-11-23
+
+- **`/fg` now actually raises the window.** Windows' foreground lock let the
+  background helper's `SetForegroundWindow` return success while the window
+  stayed behind (live: the tab was selected, Telegram kept the front). The
+  helper now joins the foreground thread's input queue before raising and
+  activating, checks `GetForegroundWindow`, and if still refused toggles
+  TOPMOST so the window is at least visibly on top; the reply says which.
+  Verified live: the window became the foreground one.
+
 ## 0.21.0 — 2026-11-23
 
 - **`/fg` in a project's topic brings its console to the front on the

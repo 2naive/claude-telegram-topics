@@ -30,9 +30,9 @@ describe("focus helper", () => {
   });
 
   test("parse: ok and fail results", () => {
-    expect(parseFocusOutput("noise\r\nRESULT ok terminal fg=True tries=1\r\n")).toEqual({
+    expect(parseFocusOutput("noise\r\nRESULT ok terminal front tries=1\r\n")).toEqual({
       ok: true,
-      detail: "terminal fg=True tries=1",
+      detail: "terminal front tries=1",
     });
     expect(parseFocusOutput("RESULT fail tab-not-found")).toEqual({ ok: false, detail: "tab-not-found" });
   });
@@ -43,6 +43,6 @@ describe("focus helper", () => {
   });
 
   test("parse: the last result line wins", () => {
-    expect(parseFocusOutput("RESULT fail x\nRESULT ok console fg=True").ok).toBe(true);
+    expect(parseFocusOutput("RESULT fail x\nRESULT ok console front").ok).toBe(true);
   });
 });

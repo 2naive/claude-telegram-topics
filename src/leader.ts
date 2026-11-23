@@ -1063,8 +1063,8 @@ async function handleCommand(text: string, topicId: number | undefined): Promise
     const r = await focusConsole(pids[pids.length - 1]!);
     await say(
       r.ok
-        ? r.detail.includes("fg=False")
-          ? "🖥 Tab selected, but Windows kept another window in front — it flashes on the taskbar."
+        ? r.detail.includes("on-top-unfocused")
+          ? "🖥 Tab selected and the window put on top, but Windows kept keyboard focus elsewhere — click it once."
           : "🖥 Brought to the front."
         : `⚠️ Could not bring it to the front (${truncate(r.detail, 80)}).`,
     );

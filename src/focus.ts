@@ -40,10 +40,30 @@ public static class TgFocus {
   public static string Cls(IntPtr h) { var b = new StringBuilder(256); GetClassNameW(h, b, 256); return b.ToString(); }
   [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte sc, uint f, UIntPtr e);
   public static string Title() { var b = new StringBuilder(2048); GetConsoleTitleW(b, 2048); return b.ToString(); }
-  public static bool Front(IntPtr h) {
+  [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, IntPtr pid);
+  [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+  [DllImport("user32.dll")] static extern bool AttachThreadInput(uint a, uint b, bool attach);
+  [DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr h);
+  [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint f);
+  // Windows' foreground lock lets a background process "succeed" at
+  // SetForegroundWindow while the window stays behind (live: returned True,
+  // Telegram kept the front). So: Alt tap, then join the foreground thread's
+  // input queue (which lifts the lock), raise and activate; verify with
+  // GetForegroundWindow; if still refused, a TOPMOST/NOTOPMOST toggle at least
+  // puts the window visually on top.
+  public static string Front(IntPtr h) {
     if (IsIconic(h)) ShowWindow(h, 9);
     keybd_event(0x12, 0, 0, UIntPtr.Zero); keybd_event(0x12, 0, 2, UIntPtr.Zero);
-    return SetForegroundWindow(h);
+    uint fgThread = GetWindowThreadProcessId(GetForegroundWindow(), IntPtr.Zero);
+    uint me = GetCurrentThreadId();
+    bool joined = fgThread != 0 && fgThread != me && AttachThreadInput(me, fgThread, true);
+    try { BringWindowToTop(h); ShowWindow(h, 5); SetForegroundWindow(h); }
+    finally { if (joined) AttachThreadInput(me, fgThread, false); }
+    if (GetForegroundWindow() == h) return "front";
+    SetWindowPos(h, new IntPtr(-1), 0, 0, 0, 0, 0x0013);
+    SetWindowPos(h, new IntPtr(-2), 0, 0, 0, 0, 0x0013);
+    return GetForegroundWindow() == h ? "front" : "on-top-unfocused";
   }
 }
 '@
@@ -52,7 +72,7 @@ if (-not [TgFocus]::AttachConsole(${target})) { 'RESULT fail attach ' + [Runtime
 $cw = [TgFocus]::GetConsoleWindow()
 if ($cw -ne [IntPtr]::Zero -and [TgFocus]::Cls($cw) -eq 'ConsoleWindowClass' -and [TgFocus]::IsWindowVisible($cw)) {
   $fg = [TgFocus]::Front($cw); [TgFocus]::FreeConsole() | Out-Null
-  'RESULT ok console fg=' + $fg; exit
+  'RESULT ok console ' + $fg; exit
 }
 $old = [TgFocus]::Title()
 $marker = 'tg-fg-' + [guid]::NewGuid().ToString('N').Substring(0, 10)
@@ -84,7 +104,7 @@ if ($wtIds.Count -eq 0) { 'RESULT fail no-window'; exit }
 if (-not $tab) { 'RESULT fail tab-not-found'; exit }
 $tab.GetCurrentPattern([System.Windows.Automation.SelectionItemPattern]::Pattern).Select()
 $fg = [TgFocus]::Front([IntPtr]$win.Current.NativeWindowHandle)
-'RESULT ok terminal fg=' + $fg + ' tries=' + $tries
+'RESULT ok terminal ' + $fg + ' tries=' + $tries
 } catch { 'RESULT fail error ' + ($_.Exception.Message -replace '\\s+', ' ') }
 `;
 }
