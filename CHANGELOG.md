@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.21.0 — 2026-11-23
+
+- **`/fg` in a project's topic brings its console to the front on the
+  machine.** With dozens of sessions in Windows Terminal tabs named mostly
+  "Claude Code", finding the right one by eye is slow. The leader already knows
+  each session's claude pid; a windowless PowerShell helper attaches to that
+  console, briefly sets its title to a unique marker (re-applied on every probe,
+  since a busy claude animates its title), finds the tab showing the marker via
+  UI Automation, selects it, raises the window (restoring it if minimized) and
+  restores the title. A classic console window (class `ConsoleWindowClass`) is
+  raised directly; WT's pseudo-console window reports itself visible, so the
+  window class, not visibility, decides the path. Several sessions on one topic:
+  the most recently registered. Replies 🖥 on success, with the reason on
+  failure (dead pid, tab not found). Verified live on two WT tabs.
+
 ## 0.20.25 — 2026-11-23
 
 - **A code block nested in a list item no longer wrecks the rest of the

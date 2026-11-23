@@ -148,6 +148,14 @@ Also:
 - **`/new`** (in a project's topic) — `/stop` + immediately launch a **fresh**
   session (no `--continue`): the from-the-phone way to clear the context and
   start over in the same topic.
+- **`/fg`** (in a project's topic) — bring that session's console to the
+  front on the machine: its Windows Terminal tab is selected and the window
+  raised (or a classic console window is restored and raised). Matching is by
+  process, not tab name: the leader briefly stamps the console title with a
+  unique marker, finds the tab showing it via UI Automation and restores the
+  title. Takes a few seconds (PowerShell start-up). In a split tab the tab is
+  selected, not the pane; a tab with a fixed title (`suppressApplicationTitle`)
+  can't be found.
 - **`/relink <project>`** (run **inside** the topic you want to keep) — repoint
   a project at this topic. Recovery for when the mapped topic was deleted on
   Telegram and a stray duplicate survives with the history: run `/relink

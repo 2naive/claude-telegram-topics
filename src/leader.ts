@@ -73,6 +73,7 @@ import {
   trackSent,
 } from "./sent.ts";
 import { hasGfmTable, normalizeTablesForRich, mdToTelegram, splitTelegram } from "./format.ts";
+import { focusConsole } from "./focus.ts";
 import { mirrorChunks, type MirrorIO } from "./mirror.ts";
 import { apiRetry } from "./tgretry.ts";
 import {
@@ -1035,6 +1036,40 @@ async function handleCommand(text: string, topicId: number | undefined): Promise
     refreshTopicStatus(project);
     return true;
   }
+  if (head === "/fg") {
+    // Bring this topic's session console to the foreground on the machine —
+    // its Windows Terminal tab (selected, window raised) or classic console
+    // window. Topic-scoped like /stop.
+    if (topicId === undefined) {
+      await say("Run /fg inside a project's topic.");
+      return true;
+    }
+    if (!projectForTopic(topicId)) {
+      await say("No project is bridged to this topic.");
+      return true;
+    }
+    const pids = [...(topicSessions.get(topicId) ?? [])]
+      .map((sid) => sessions.get(sid)?.pid)
+      .filter((p): p is number => p !== undefined);
+    if (pids.length === 0) {
+      await say(
+        (topicSessions.get(topicId)?.size ?? 0) === 0
+          ? "No live session here — nothing to bring to the front."
+          : "⚠️ This session did not report a pid (pre-0.17.0 or non-Windows).",
+      );
+      return true;
+    }
+    // Several consoles on one topic: the most recently registered one.
+    const r = await focusConsole(pids[pids.length - 1]!);
+    await say(
+      r.ok
+        ? r.detail.includes("fg=False")
+          ? "🖥 Tab selected, but Windows kept another window in front — it flashes on the taskbar."
+          : "🖥 Brought to the front."
+        : `⚠️ Could not bring it to the front (${truncate(r.detail, 80)}).`,
+    );
+    return true;
+  }
   if (head === "/start") {
     // `/start <path>` launches a new project; bare `/start` shows the picker of
     // projects already bridged.
@@ -1081,7 +1116,7 @@ function initBot(): void {
     const t = m.text?.trim();
     if (
       t &&
-      (/^\/(status|list|stop|new|reload-map)(@\w+)?$/.test(t) ||
+      (/^\/(status|list|stop|new|fg|reload-map)(@\w+)?$/.test(t) ||
         /^\/(start|relink)(@\w+)?(\s+\S.*)?$/.test(t))
     ) {
       if (await handleCommand(t, topicId)) return;
