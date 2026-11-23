@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.20.25 — 2026-11-23
+
+- **A code block nested in a list item no longer wrecks the rest of the
+  message.** The formatter recognized a fence only at column 0, but inside a
+  numbered item the model indents it by the item's width (three spaces
+  after `3. …`). The unrecognized fence's backticks then paired up as inline code
+  with a later backtick, so everything in between came out as one monospace run
+  with raw `**` markers. Fences may now be indented; the body is dedented by the
+  fence's own indent (deeper relative indentation is kept) and an indented
+  closing fence closes it. The table detector and the rich-message normalizer
+  use the same rule, so a table inside an indented fence stays verbatim.
+
 ## 0.20.24 — 2026-10-27
 
 - **The memory leak is named and fixed: parallel GC marker threads.** Two days

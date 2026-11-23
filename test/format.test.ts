@@ -304,6 +304,41 @@ describe("mdToTelegram hardening (0.10.1)", () => {
     expect(r.text).toContain("ls");
   });
 
+  test("a fence indented inside a list item is a code block, not an inline-code cascade", () => {
+    const md = [
+      "3. **Title.** Run this:",
+      "   ```",
+      "   wt -w 0 nt --title x -d C:\\p cmd /k cct",
+      "   ```",
+      "   Then more.",
+      "4. **Next.** Use `wt -w work …` here.",
+    ].join("\n");
+    const r = mdToTelegram(md);
+    const pre = (r.entities ?? []).filter((e) => e.type === "pre");
+    expect(pre.length).toBe(1);
+    const code = r.text.slice(pre[0]!.offset, pre[0]!.offset + pre[0]!.length);
+    expect(code).toBe("wt -w 0 nt --title x -d C:\\p cmd /k cct"); // indent stripped
+    expect(r.text).not.toContain("```");
+    // The later bold and inline code still render as entities.
+    const bold = (r.entities ?? []).filter((e) => e.type === "bold");
+    expect(bold.length).toBe(2);
+    const inline = (r.entities ?? []).filter((e) => e.type === "code");
+    expect(inline.length).toBe(1);
+    expect(r.text.slice(inline[0]!.offset, inline[0]!.offset + inline[0]!.length)).toBe("wt -w work …");
+  });
+
+  test("an indented fence keeps deeper relative indentation and closes on an indented fence", () => {
+    const r = mdToTelegram("- item\n  ```py\n  if x:\n      y()\n  ```\nafter");
+    const pre = (r.entities ?? []).find((e) => e.type === "pre")!;
+    expect(pre.language).toBe("py");
+    expect(r.text.slice(pre.offset, pre.offset + pre.length)).toBe("if x:\n    y()");
+    expect(r.text.endsWith("after")).toBe(true);
+  });
+
+  test("hasGfmTable ignores a table inside an indented fence", () => {
+    expect(hasGfmTable("1. x\n   ```\n   | A | B |\n   |---|---|\n   ```")).toBe(false);
+  });
+
   test("four-backtick fence keeps an inner triple-backtick verbatim", () => {
     const r = mdToTelegram("````js\ncode ``` inside\n````");
     expect(r.text).toBe("code ``` inside");

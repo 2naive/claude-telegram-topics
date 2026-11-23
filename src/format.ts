@@ -406,8 +406,25 @@ function emitTable(rows: string[], out: Out): void {
 
 // --- Block layer: fences, tables, headings, and inline runs ---
 
+// A fence may be indented: inside a list item the model indents it by the
+// item's content width ("3. text\n   ```\n   code\n   ```"). Requiring the
+// fence at column 0 left such a block unrecognized, and its backticks then
+// paired up as inline code across the rest of the message.
+const FENCE_OPEN_RE = /^([ \t]*)(`{3,})([^`\n]*)$/;
+
+function fenceCloseRe(ticks: number): RegExp {
+  return new RegExp("^[ \\t]*`{" + ticks + ",}\\s*$");
+}
+
+/** Strip up to `n` leading spaces/tabs (the fence's own indent) from a body line. */
+function dedent(line: string, n: number): string {
+  let k = 0;
+  while (k < n && k < line.length && (line[k] === " " || line[k] === "\t")) k++;
+  return line.slice(k);
+}
+
 function isFenceOpen(line: string): boolean {
-  return /^`{3,}[^`\n]*$/.test(line);
+  return FENCE_OPEN_RE.test(line);
 }
 
 function startsTable(lines: string[], i: number): boolean {
@@ -426,9 +443,9 @@ function isBlockStart(lines: string[], i: number): boolean {
 export function hasGfmTable(input: string): boolean {
   const lines = input.replace(/\r\n?/g, "\n").split("\n");
   for (let i = 0; i < lines.length; i++) {
-    const fence = /^(`{3,})[^`\n]*$/.exec(lines[i]!);
+    const fence = FENCE_OPEN_RE.exec(lines[i]!);
     if (fence) {
-      const closeRe = new RegExp("^`{" + fence[1]!.length + ",}\\s*$");
+      const closeRe = fenceCloseRe(fence[2]!.length);
       let j = i + 1;
       while (j < lines.length && !closeRe.test(lines[j]!)) j++;
       i = j;
@@ -454,10 +471,10 @@ export function normalizeTablesForRich(input: string): string {
   let i = 0;
   while (i < lines.length) {
     const line = lines[i]!;
-    const fence = /^(`{3,})[^`\n]*$/.exec(line);
+    const fence = FENCE_OPEN_RE.exec(line);
     if (fence) {
       out.push(line);
-      const closeRe = new RegExp("^`{" + fence[1]!.length + ",}\\s*$");
+      const closeRe = fenceCloseRe(fence[2]!.length);
       i++;
       while (i < lines.length && !closeRe.test(lines[i]!)) out.push(lines[i++]!);
       if (i < lines.length) out.push(lines[i++]!);
@@ -494,14 +511,15 @@ function emitBlocks(src: string, out: Out): void {
     // backticks (or EOF, preserving graceful degradation). A same-line
     // ```ls``` has trailing backticks so it never matches — it falls through
     // to the inline scanner, as before.
-    const fence = /^(`{3,})([^`\n]*)$/.exec(line);
+    const fence = FENCE_OPEN_RE.exec(line);
     if (fence) {
-      const ticks = fence[1]!.length;
-      const language = (fence[2]!.trim().split(/\s+/)[0] ?? "").slice(0, 64);
-      const closeRe = new RegExp("^`{" + ticks + ",}\\s*$");
+      const indent = fence[1]!.length;
+      const ticks = fence[2]!.length;
+      const language = (fence[3]!.trim().split(/\s+/)[0] ?? "").slice(0, 64);
+      const closeRe = fenceCloseRe(ticks);
       const body: string[] = [];
       let j = i + 1;
-      while (j < lines.length && !closeRe.test(lines[j]!)) body.push(lines[j++]!);
+      while (j < lines.length && !closeRe.test(lines[j]!)) body.push(dedent(lines[j++]!, indent));
       const code = body.join("\n");
       if (code.length > 0) {
         sep();
