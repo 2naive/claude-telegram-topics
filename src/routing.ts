@@ -471,6 +471,73 @@ export function withSavedPath(text: string, path: string | null): string {
   return path ? `${text} saved:${path}` : text;
 }
 
+// --- Replies ---
+//
+// A reply in Telegram reaches the session as a bare message: without this the
+// session cannot tell which of five photos «this one» points at. The leader
+// passes the replied-to message id and a short quote of it along.
+
+/** The fields of an incoming message that say what it replies to. */
+export type ReplyMessage = {
+  message_id: number;
+  message_thread_id?: number;
+  /** The part of the replied-to message the user selected (Bot API `quote`). */
+  quote?: { text: string };
+  reply_to_message?: AttachmentMessage & {
+    message_id: number;
+    text?: string;
+    forum_topic_created?: unknown;
+    rich_message?: unknown;
+  };
+};
+
+export const REPLY_QUOTE_MAX = 100;
+
+/**
+ * What a message replies to — the replied-to message id plus a one-line quote
+ * of it (the selected quote, else its text, else its media label and caption),
+ * REPLY_QUOTE_MAX characters plus an ellipsis at most — or null when it is not
+ * a real reply. In a forum topic every message without an explicit reply
+ * carries the topic's creation service message as reply_to_message; that one
+ * is not a reply. A reply to another chat or topic (Bot API `external_reply`)
+ * is left out on purpose: its id means nothing in this topic. A media label
+ * `[photo]` becomes `(photo)` — tag attributes lose square brackets (safeAttr).
+ * `saved:` in the quote becomes `saved_`: the session opens the path after a
+ * `saved:`, and a quote of someone else's message must not hand it one. The
+ * cut counts characters, not UTF-16 units, so an emoji is never split. Pure.
+ */
+export function replyContext(m: ReplyMessage): { id: number; quote: string } | null {
+  const r = m.reply_to_message;
+  if (!r) return null;
+  if (r.forum_topic_created !== undefined || r.message_id === m.message_thread_id) return null;
+  const media = inboundAttachment(r)?.text.replace(/^\[([^\]]*)\]/, "($1)");
+  const raw = m.quote?.text || r.text || media || r.caption || richMessageToText(r.rich_message);
+  const quote = (raw ?? "").replace(/\s+/g, " ").trim().replace(/saved\s*:/gi, "saved_");
+  const chars = Array.from(quote);
+  const cut = chars.length > REPLY_QUOTE_MAX ? chars.slice(0, REPLY_QUOTE_MAX).join("") + "…" : quote;
+  return { id: r.message_id, quote: cut };
+}
+
+/** Strip delimiter chars so a sender can't break out of the <channel> tag or
+ * forge a second meta attribute. (Moved here from server.ts by the reply-to
+ * patch, so replyMeta and the server share one copy.) */
+export function safeAttr(s: string): string {
+  return s.replace(/[<>\[\]\r\n;]/g, "_");
+}
+
+/**
+ * The `<channel>` tag attributes for a reply: `reply_to` (the id) and
+ * `reply_quote`, cleaned by safeAttr plus a double quote → single quote, so the
+ * quote cannot close its attribute. Empty for a message that is not a reply.
+ * Pure.
+ */
+export function replyMeta(m: { replyTo?: number; replyQuote?: string }): Record<string, string> {
+  if (m.replyTo === undefined) return {};
+  const meta: Record<string, string> = { reply_to: String(m.replyTo) };
+  if (m.replyQuote) meta.reply_quote = safeAttr(m.replyQuote).replace(/"/g, "'");
+  return meta;
+}
+
 // --- Incoming native rich messages (Bot API 10.2) ---
 //
 // A forwarded rich message — anything the bot sent via sendRichMessage, e.g. a
