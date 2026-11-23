@@ -67,15 +67,6 @@ export function permCallbackData(
   return `perm:${behavior}:${sessionId}:${requestId}`;
 }
 
-/**
- * Prefix that tags WHICH session sent a message, so a user with two sessions on
- * one project can tell them apart. Empty unless the topic has more than one
- * session — a lone session needs no tag.
- */
-export function sessionPrefix(label: string, sessionCount: number): string {
-  return sessionCount > 1 && label ? `«${label}» ` : "";
-}
-
 export function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n) + "…" : s;
 }
@@ -112,8 +103,18 @@ export function stripStatusGlyph(name: string): string {
 }
 
 /** Prefix a topic name with the glyph for `status`, replacing any existing one. */
-export function withStatusGlyph(name: string, status: TopicStatus): string {
-  return `${STATUS_GLYPH[status]} ${stripStatusGlyph(name)}`;
+export function withStatusGlyph(name: string, status: TopicStatus, sessionCount = 1): string {
+  const base = stripStatusGlyph(name).replace(SESSION_COUNT_RE, "");
+  return `${STATUS_GLYPH[status]} ${base}${sessionCount > 1 ? ` ×${sessionCount}` : ""}`;
+}
+
+/** The ` ×N` live-session suffix withStatusGlyph appends when a topic has 2+. */
+const SESSION_COUNT_RE = /\s+×\d+$/;
+
+/** Cache key for an applied topic badge: status plus live-session count, so a
+ * count change re-renames the topic even when the status glyph is unchanged. */
+export function badgeKey(status: TopicStatus, sessionCount: number): string {
+  return `${status}#${sessionCount > 1 ? sessionCount : 1}`;
 }
 
 /**
@@ -580,4 +581,21 @@ export function channelLostNotice(label: string, reason: string): string {
 export function memWarnNotice(label: string, rssMb: number): string {
   const who = label ? `Session «${label}»` : "This session";
   return `⚠️ ${who}: its Telegram bridge process has grown to ${rssMb} MB (a slow leak; it keeps working). Restart this console when convenient.`;
+}
+
+/**
+ * Header naming which console an answer came from, for a topic served by 2+
+ * sessions: "«name»" (plus " #k" by registration order when two share a name).
+ * Empty for a single session, or when the owner is unknown — never guess.
+ */
+export function sessionHeader(
+  members: Array<{ sid: string; label: string }>,
+  ownerSid: string | undefined,
+): string {
+  if (members.length < 2 || !ownerSid) return "";
+  const idx = members.findIndex((m) => m.sid === ownerSid);
+  if (idx === -1) return "";
+  const label = members[idx]!.label.trim() || `#${idx + 1}`;
+  const dup = members.filter((m) => m.label.trim() === members[idx]!.label.trim()).length > 1;
+  return `«${label}${dup && members[idx]!.label.trim() ? ` #${idx + 1}` : ""}»`;
 }

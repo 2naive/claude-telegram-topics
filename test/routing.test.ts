@@ -16,7 +16,8 @@ import {
   pickSessionField,
   pickSessionName,
   remapValues,
-  sessionPrefix,
+  sessionHeader,
+  badgeKey,
   truncate,
   statusGlyph,
   stripStatusGlyph,
@@ -120,17 +121,55 @@ describe("parseCallback", () => {
   });
 });
 
-describe("sessionPrefix", () => {
+describe("sessionHeader", () => {
+  const two = [
+    { sid: "a", label: "main" },
+    { sid: "b", label: "hotfix" },
+  ];
   test("is empty for a single session", () => {
-    expect(sessionPrefix("main", 1)).toBe("");
+    expect(sessionHeader([{ sid: "a", label: "main" }], "a")).toBe("");
   });
 
-  test("tags when the topic has more than one session", () => {
-    expect(sessionPrefix("main", 2)).toBe("«main» ");
+  test("names the owner when the topic has more than one session", () => {
+    expect(sessionHeader(two, "b")).toBe("«hotfix»");
   });
 
-  test("is empty when there is no label", () => {
-    expect(sessionPrefix("", 3)).toBe("");
+  test("is empty when the owner is unknown — never guess", () => {
+    expect(sessionHeader(two, undefined)).toBe("");
+    expect(sessionHeader(two, "zzz")).toBe("");
+  });
+
+  test("twin names get a stable #k by registration order", () => {
+    const twins = [
+      { sid: "a", label: "system-7f" },
+      { sid: "b", label: "system-7f" },
+    ];
+    expect(sessionHeader(twins, "a")).toBe("«system-7f #1»");
+    expect(sessionHeader(twins, "b")).toBe("«system-7f #2»");
+  });
+
+  test("an unnamed session falls back to its number", () => {
+    expect(sessionHeader([{ sid: "a", label: "x" }, { sid: "b", label: " " }], "b")).toBe("«#2»");
+  });
+});
+
+describe("topic session count", () => {
+  test("withStatusGlyph appends ×N only for 2+ sessions", () => {
+    expect(withStatusGlyph("system", "ready", 1)).toBe("🟢 system");
+    expect(withStatusGlyph("system", "ready", 0)).toBe("🟢 system");
+    expect(withStatusGlyph("system", "working", 3)).toBe("⏳ system ×3");
+  });
+
+  test("re-tagging replaces the count instead of stacking it", () => {
+    const once = withStatusGlyph("system", "ready", 3);
+    expect(withStatusGlyph(once, "working", 2)).toBe("⏳ system ×2");
+    expect(withStatusGlyph(once, "offline", 0)).toBe("💤 system");
+  });
+
+  test("badgeKey changes with the count even when the status does not", () => {
+    expect(badgeKey("ready", 1)).toBe(badgeKey("ready", 0));
+    expect(badgeKey("ready", 2)).not.toBe(badgeKey("ready", 1));
+    expect(badgeKey("ready", 2)).not.toBe(badgeKey("working", 2));
   });
 });
 

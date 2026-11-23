@@ -315,3 +315,11 @@ export function sessionLabel(): string {
   labelCache = { value, at: now };
   return value;
 }
+
+/** The current Claude Code session name (`/rename`, else the derived one) of
+ * claude process `pid`, read from its session record; "" when unknown. Lets
+ * the LEADER label any session's answers with a name that tracks renames. */
+export function sessionNameForPid(pid: number): string {
+  const n = readSessionRecordFor(pid)?.name;
+  return typeof n === "string" ? n.trim() : "";
+}

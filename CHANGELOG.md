@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.22.0 — 2026-11-23
+
+- **Topics served by several consoles say so, and say who answered.** The
+  topic name gains ` ×N` next to the status glyph when 2+ sessions are live
+  (the badge cache now keys on status + count, so a count change renames even
+  when the glyph is unchanged). Auto-mirrored answers — most of the traffic —
+  carried no session tag at all; they now open with a bold `«name»` header
+  when the topic has 2+ sessions and the answer's owner is known (never
+  guessed). Manual sends use the same header. The name is re-read from the
+  owner's Claude Code session record on every answer, so `/rename` in a
+  console shows up immediately; twin names get ` #k` by registration order.
+
 ## 0.21.1 — 2026-11-23
 
 - **`/fg` now actually raises the window.** Windows' foreground lock let the

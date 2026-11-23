@@ -214,6 +214,12 @@ You never have to guess whether the bridge is alive:
   the leader's own signal for Telegram-driven turns; it flips per turn. The
   per-tool-call heartbeat is a background (`async`) hook, so tool calls never
   wait on it. Set `TG_TOPICS_STATUS_ICONS=0` to keep topic names unbadged.
+- **Several consoles on one project** — the topic name gains ` ×N` (e.g.
+  `⏳ system ×2`), and every answer (auto-mirrored or sent) opens with the
+  console's name in bold, `«name»`, so you can tell who said what. The name is
+  the Claude Code session name — set it with `/rename` in that console (it
+  shows up on the next answer); unnamed sessions use Claude Code's derived name,
+  and twins get ` #k` by start order. A lone session gets no header.
 - **`/status`** (in any topic, or General) — the leader itself answers with its
   version, pid and uptime, then **one line per bridged project** (its glyph +
   name + session labels, or `N queued, no session`, or `no session`) and a

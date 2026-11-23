@@ -48,12 +48,13 @@ import {
   isServiceMessage,
   inboundAttachment,
   permCallbackData,
-  sessionPrefix,
+  sessionHeader,
   startCallbackData,
   truncate,
   withSavedPath,
   richMessageToText,
   withStatusGlyph,
+  badgeKey,
   statusGlyph,
   computeTopicStatus,
   type TopicStatus,
@@ -86,7 +87,7 @@ import {
   discoverLaunchable,
 } from "./spawn.ts";
 import { existsSync } from "node:fs";
-import { aliveConsolePidsFor } from "./project.ts";
+import { aliveConsolePidsFor, sessionNameForPid } from "./project.ts";
 import { loadHeld, persistHeld, flushHeld } from "./held.ts";
 import { log } from "./log.ts";
 
@@ -497,7 +498,9 @@ function stopTyping(topicId: number): void {
 // 💤 no-session) — the only per-topic signal Telegram renders in the topic
 // LIST. Opt out with TG_TOPICS_STATUS_ICONS=0.
 const STATUS_ICONS = process.env.TG_TOPICS_STATUS_ICONS !== "0";
-const topicStatusNow = new Map<number, TopicStatus>();
+// Applied badge per topic, as badgeKey(status, liveSessionCount): the name also
+// carries ` ×N` when 2+ consoles serve the topic.
+const topicStatusNow = new Map<number, string>();
 
 // Per-project working/idle, fed by the activity hook (UserPromptSubmit +
 // PreToolUse -> working, Stop -> idle) and by the leader itself for Telegram
@@ -647,14 +650,16 @@ const statusTimers = new Map<
   number,
   { timer: ReturnType<typeof setTimeout>; delay: number }
 >();
-const statusTarget = new Map<number, TopicStatus>();
+const statusTarget = new Map<number, { status: TopicStatus; count: number }>();
 
 function refreshTopicStatus(project: string): void {
   if (!STATUS_ICONS) return;
   const topicId = projectTopicId(project);
   if (topicId === undefined) return;
   const status = topicStatusOf(project);
-  statusTarget.set(topicId, status);
+  const count = topicSessions.get(topicId)?.size ?? 0;
+  const key = badgeKey(status, count);
+  statusTarget.set(topicId, { status, count });
   const delay = status === "working" ? WORKING_APPLY_DELAY_MS : STATUS_DEBOUNCE_MS;
   const pending = statusTimers.get(topicId);
   if (pending) {
@@ -664,18 +669,20 @@ function refreshTopicStatus(project: string): void {
     if (delay >= pending.delay) return;
     clearTimeout(pending.timer);
     statusTimers.delete(topicId);
-  } else if (topicStatusNow.get(topicId) === status) {
+  } else if (topicStatusNow.get(topicId) === key) {
     return;
   }
   const timer = setTimeout(() => {
     statusTimers.delete(topicId);
     const want = statusTarget.get(topicId);
-    if (want === undefined || topicStatusNow.get(topicId) === want) return;
-    topicStatusNow.set(topicId, want);
-    log("badge", { topicId, status: want });
+    if (want === undefined) return;
+    const wantKey = badgeKey(want.status, want.count);
+    if (topicStatusNow.get(topicId) === wantKey) return;
+    topicStatusNow.set(topicId, wantKey);
+    log("badge", { topicId, status: want.status, sessions: want.count });
     void bot.api
       .editForumTopic(GROUP_CHAT_ID, topicId, {
-        name: withStatusGlyph(topicName(project), want),
+        name: withStatusGlyph(topicName(project), want.status, want.count),
       })
       .catch((e) => {
         // TOPIC_NOT_MODIFIED just means the name already carries this glyph — our
@@ -1630,6 +1637,23 @@ function mirrorOwnerSid(topicId: number, claudeSessionId?: string): string | und
   return pickMirrorOwner(members, claudeSessionId);
 }
 
+// Who answered, when a topic is served by 2+ consoles: «name» (the Claude Code
+// session name — /rename, else derived — re-read from the session record so a
+// rename shows up at once). Members in registration order, so a " #k"
+// tiebreak for twin names stays stable.
+function headerFor(topicId: number, ownerSid: string | undefined): string {
+  const members = [...(topicSessions.get(topicId) ?? [])]
+    .map((sid) => sessions.get(sid))
+    .filter((x): x is Session => x !== undefined)
+    .sort((a, b) => a.bornAt - b.bornAt)
+    .map((x) => {
+      const fresh = x.pid !== undefined ? sessionNameForPid(x.pid) : "";
+      if (fresh) x.label = fresh;
+      return { sid: x.id, label: x.label };
+    });
+  return sessionHeader(members, ownerSid);
+}
+
 async function mirrorToTopic(
   project: string,
   text: string,
@@ -1650,6 +1674,13 @@ async function mirrorToTopic(
       trackSent(messageId, { topicId, sessionId: ownerSid });
     }
   };
+
+  // Name the console when the topic has several (the only deviation from the
+  // console text: a header line). Dedup above keys on the raw text.
+  const header = headerFor(topicId, ownerSid);
+  if (header) text = `**${header}**
+
+${text}`;
 
   // Native tables when the answer contains one (normalized so Telegram parses
   // them). A rich failure falls through to the classic chunked pipeline below.
@@ -1735,10 +1766,14 @@ async function tryRichTable(
   }
 }
 
+function withHeader(header: string, body: string): string {
+  return header ? (body ? `${header} ${body}` : header) : body;
+}
+
 async function sendText(s: Session, text: string, options?: string[]): Promise<number> {
   stopTyping(s.topicId); // the reply is arriving — drop the "typing" keepalive
   const outText =
-    sessionPrefix(s.label, topicSessions.get(s.topicId)?.size ?? 1) + text;
+    withHeader(headerFor(s.topicId, s.id), text);
   const richMarkup = options?.length
     ? { inline_keyboard: options.map((o, j) => [{ text: o, callback_data: String(j) }]) }
     : undefined;
@@ -1802,7 +1837,7 @@ async function sendFile(s: Session, path: string, caption: string): Promise<numb
   stopTyping(s.topicId);
   const isPhoto = PHOTO_EXT.has(path.slice(path.lastIndexOf(".")).toLowerCase());
   const cap =
-    sessionPrefix(s.label, topicSessions.get(s.topicId)?.size ?? 1) + caption;
+    withHeader(headerFor(s.topicId, s.id), caption);
   const msgId = await withRecovery(s, async (topicId) => {
     const opts = { message_thread_id: topicId, caption: cap || undefined };
     const sent = isPhoto
