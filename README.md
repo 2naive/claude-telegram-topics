@@ -125,7 +125,8 @@ after a reboot, a crash, a closed console — and:
 - once the session registers, the queued messages are delivered — with
   confirmation: if a freshly started session doesn't begin a turn within 45 s,
   delivery is retried (twice), then an honest ⚠️ notice is posted instead of
-  silence.
+  silence. A session whose hooks show a turn in progress is not retried: the
+  messages wait behind that turn (a notice follows if it stays silent 15 min).
 
 So the loop after a reboot is: **message the topic → console opens →
 the conversation continues where it left off.** No touching the machine.

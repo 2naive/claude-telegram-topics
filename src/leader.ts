@@ -62,6 +62,7 @@ import {
   POLL_MAX_SEC,
 } from "./routing.ts";
 import { channelLostNotice, memWarnNotice } from "./routing.ts";
+import { confirmStep, hookTurn, newPendingMessages, unconfirmedNotice } from "./confirm.ts";
 import {
   flushSent,
   loadSent,
@@ -335,6 +336,10 @@ async function postNoSessionNotice(topicId: number, project: string): Promise<vo
 const CONFIRM_TIMEOUT_MS = 45_000;
 const CONFIRM_MAX_REDELIVERIES = 2;
 const lastActivityAt = new Map<string, number>(); // project -> last /activity ts
+// project -> state of the last turn hook ("start" | "working" | "idle" |
+// "failed"; a /mirror POST is the Stop hook, i.e. "idle"). Tells a turn that
+// went quiet mid-way (open, no Stop) from a session that never surfaced input.
+const lastHookState = new Map<string, string>();
 type PendingConfirm = {
   sid: string;
   msgs: Inbound[];
@@ -342,6 +347,8 @@ type PendingConfirm = {
    * Session.soloMids) — the session may be gone when the timer fires. */
   solo: Set<number>;
   redeliveries: number;
+  /** a "deliver.defer" line was logged for this pending set */
+  deferred: boolean;
   timer: ReturnType<typeof setTimeout>;
 };
 const pendingConfirm = new Map<string, PendingConfirm>(); // project ->
@@ -356,34 +363,40 @@ function clearPendingConfirm(project: string): void {
 function armPendingConfirm(s: Session, msgs: Inbound[]): void {
   if (msgs.length === 0) return;
   const project = s.project;
-  // Skip only when the project is provably MID-TURN right now (hook activity
-  // since this session registered, recent, and the badge agrees): re-arming
+  // Skip only when the hooks say the project is MID-TURN right now (a start/
+  // working hook since this session registered, under 2 min old): re-arming
   // there risks double-delivery, and the queued message legitimately surfaces
   // after the turn. Everything else arms — including sessions that HAVE turned
   // from the console but run without the channel half (flagless launch, live
   // incident: delivered messages vanished with no retry and no notice because
-  // console turns made the session look healthy). The badge check alone can't
-  // be trusted here: the leader optimistically flips it to "working" for
-  // routed messages, which must not mask a deaf fresh session.
-  const last = lastActivityAt.get(project) ?? 0;
-  const midTurn =
-    last >= s.bornAt &&
-    Date.now() - last < 120_000 &&
-    topicStatusOf(project) === "working";
+  // console turns made the session look healthy). Only the hooks count, not the
+  // badge: the leader optimistically flips it to "working" for routed
+  // messages, which must not mask a deaf session.
+  const midTurn = hookTurn({
+    last: lastActivityAt.get(project) ?? 0,
+    bornAt: s.bornAt,
+    hook: lastHookState.get(project) ?? "",
+    now: Date.now(),
+    ttl: 120_000,
+  }).fresh;
   if (midTurn) return;
   const soloOf = (list: Inbound[]): number[] =>
     list.filter((m) => s.soloMids.has(m.messageId)).map((m) => m.messageId);
   const existing = pendingConfirm.get(project);
   if (existing) {
-    existing.msgs.push(...msgs);
-    for (const mid of soloOf(msgs)) existing.solo.add(mid);
+    // A redelivered message comes back here through /poll: count it once.
+    const fresh = newPendingMessages(existing.msgs, msgs);
+    existing.msgs.push(...fresh);
+    for (const mid of soloOf(fresh)) existing.solo.add(mid);
     return;
   }
+  const first = newPendingMessages([], msgs);
   pendingConfirm.set(project, {
     sid: s.id,
-    msgs: [...msgs],
-    solo: new Set(soloOf(msgs)),
+    msgs: first,
+    solo: new Set(soloOf(first)),
     redeliveries: 0,
+    deferred: false,
     timer: setTimeout(() => confirmTimeout(project), CONFIRM_TIMEOUT_MS),
   });
 }
@@ -404,18 +417,36 @@ function confirmTimeout(project: string): void {
     }
     return;
   }
-  if (p.redeliveries >= CONFIRM_MAX_REDELIVERIES) {
+  // What the turn hooks of this project say since this session registered —
+  // not activeWorking(), which the leader also sets when it routes a message.
+  const turn = hookTurn({
+    last: lastActivityAt.get(project) ?? 0,
+    bornAt: s.bornAt,
+    hook: lastHookState.get(project) ?? "",
+    now: Date.now(),
+    ttl: ACTIVITY_TTL_MS,
+  });
+  const step = confirmStep({ turn, redeliveries: p.redeliveries, max: CONFIRM_MAX_REDELIVERIES });
+  if (step === "defer") {
+    // Usually busy (a menu, one long step): the messages wait behind the open
+    // turn; an Esc or a crash looks the same, see unconfirmedNotice. Re-check
+    // later; the turn's next hook confirms and clears this.
+    if (!p.deferred) log("deliver.defer", { project, sid: p.sid, count: p.msgs.length });
+    p.deferred = true;
+    p.timer = setTimeout(() => confirmTimeout(project), CONFIRM_TIMEOUT_MS);
+    return;
+  }
+  if (step === "give-up") {
     pendingConfirm.delete(project);
-    log("deliver.unconfirmed", { project, sid: p.sid, count: p.msgs.length });
+    log("deliver.unconfirmed", { project, sid: p.sid, count: p.msgs.length, turnOpen: turn.open });
     const tid = projectTopicId(project);
     if (tid !== undefined) {
       // Name the deterministic cause when there is one: a session launched
       // with --channels while the plugin is not allowlisted can NEVER surface
-      // inbound — "resend the message" would be false hope.
-      const allow = channelAllowlistState();
-      const note = allow.ok
-        ? "⚠️ The session has not picked the message up. If it is still starting it may catch up; if it was launched without the channels flag (a plain `claude`), it can never receive — close that console and relaunch from here (▶️ button / autostart), then resend."
-        : "⚠️ The session cannot receive messages: the plugin is not on the channels allowlist, so --channels loads it without the inbound half. On the machine run /telegram-topics:allowlist (one admin prompt), or launch with --dangerously-load-development-channels, then restart the session.";
+      // inbound — "resend the message" would be false hope. A turn that went
+      // quiet without ending is usually waiting in the console; the notice
+      // names the flagless case too (an Esc or a crash looks the same).
+      const note = unconfirmedNotice({ allowlisted: channelAllowlistState().ok, turnWasOpen: turn.open });
       void bot.api
         .sendMessage(GROUP_CHAT_ID, note, { message_thread_id: tid })
         .catch(() => {});
@@ -1813,6 +1844,7 @@ async function handle(req: Request): Promise<Response> {
       markHooked(project); // this session carries the hooks
       // App-level proof the session surfaces messages — confirm the delivery.
       lastActivityAt.set(project, Date.now());
+      lastHookState.set(project, state ?? "");
       clearPendingConfirm(project);
       if (state === "failed") notifyTurnFailed(project);
       else if (state === "start") beginTurn(project); // turn boundary (UserPromptSubmit)
@@ -1834,6 +1866,7 @@ async function handle(req: Request): Promise<Response> {
     if (project) {
       markHooked(project); // a mirror POST proves the hook is present
       lastActivityAt.set(project, Date.now());
+      lastHookState.set(project, "idle"); // the Stop hook: the turn ended
       clearPendingConfirm(project); // a completed turn certainly consumed inbound
     }
     const skipped = !project || !text || !text.trim() || spokeThisTurn.has(project);
@@ -2409,6 +2442,7 @@ export function stopLeader(): void {
   for (const p of pendingConfirm.values()) clearTimeout(p.timer);
   pendingConfirm.clear();
   lastActivityAt.clear();
+  lastHookState.clear();
   // A demoted leader must not fire a deferred autostart it armed while leading.
   for (const t of deferredAutostarts) clearTimeout(t);
   deferredAutostarts.clear();
