@@ -1186,7 +1186,13 @@ function initBot(): void {
       // (the Stop hook still returns it to ready). No-op if the topic is unmapped.
       const proj = projectForTopic(topicId);
       if (proj) {
-        beginTurn(proj);
+        // An idle session's turn starts with this message: begin it here so the
+        // auto-mirror does not hinge on the start hook alone. Mid-turn the message
+        // is only queued; resetting there let the running turn's Stop mirror post
+        // its closing text after the session had answered via send_message (#8).
+        // The start ping begins that turn when the message reaches the model.
+        if (activeWorking(proj)) setActivity(proj, "working");
+        else beginTurn(proj);
         checkHookless(proj, topicId); // warn if this session has no auto-mirror
       }
     }
@@ -1513,9 +1519,10 @@ async function withRecovery<T>(
 
 // A session that sent its own outbound this turn (a send_message with buttons, a
 // file, an edit) has "spoken" — the Stop auto-mirror then skips, so an
-// interactive turn is not double-posted. Reset at each turn start: the
-// UserPromptSubmit "start" ping for a console turn, inbound routing for a
-// Telegram turn. Keyed by project (the mirror arrives keyed the same way).
+// interactive turn is not double-posted. Reset at each turn start (beginTurn):
+// the UserPromptSubmit "start" ping, the held-inbox drain, and inbound routing
+// to an idle session (not mid-turn: such a message is only queued). Keyed by
+// project (the mirror arrives keyed the same way).
 const spokeThisTurn = new Set<string>();
 
 // Above this many chunks the mirror stops push-flooding the topic: it sends one
@@ -1528,8 +1535,9 @@ const lastMirrored = new Map<string, string>();
 // A turn is starting for `project`: whatever the session said LAST turn no
 // longer stands the auto-mirror down, a fresh answer may legitimately repeat
 // the previous one, and the badge shows ⏳. Every turn-starting path goes
-// through here — the live inbound route, the held-inbox drain at register and
-// the start hook — so the mirror never hinges on the activity hook alone.
+// through here — the live inbound route (to an idle session), the held-inbox
+// drain at register and the start hook — so the mirror never hinges on the
+// activity hook alone.
 function beginTurn(project: string): void {
   spokeThisTurn.delete(project);
   lastMirrored.delete(project);
