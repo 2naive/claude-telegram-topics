@@ -29,6 +29,14 @@ describe("focus helper", () => {
     expect(ps).toMatch(/Add-Type @'\n[\s\S]*\n'@\n/);
   });
 
+  test("never issues SW_SHOW / SW_SHOWNORMAL (a hidden-spawned helper would hide the window)", () => {
+    const ps = buildFocusPs(1);
+    const cmds = [...ps.matchAll(/ShowWindow\(\s*\w+\s*,\s*(\d+)\s*\)/g)].map((m) => Number(m[1]));
+    expect(cmds.length).toBeGreaterThan(0);
+    for (const c of cmds) expect([4, 9]).toContain(c);
+    expect(ps).toContain("if (!IsWindowVisible(h)) ShowWindow(h, 4);");
+  });
+
   test("parse: ok and fail results", () => {
     expect(parseFocusOutput("noise\r\nRESULT ok terminal front tries=1\r\n")).toEqual({
       ok: true,

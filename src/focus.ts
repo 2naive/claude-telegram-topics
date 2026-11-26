@@ -52,14 +52,21 @@ public static class TgFocus {
   // input queue (which lifts the lock), raise and activate; verify with
   // GetForegroundWindow; if still refused, a TOPMOST/NOTOPMOST toggle at least
   // puts the window visually on top.
+  // Never SW_SHOW (5) / SW_SHOWNORMAL (1) here: the helper is spawned hidden
+  // (windowsHide => STARTUPINFO wShowWindow = SW_HIDE), and Windows replaces
+  // the process's FIRST ShowWindow command of that kind with the startup one —
+  // so a plain SW_SHOW call HID the terminal window (gone from the taskbar,
+  // tabs alive). SW_RESTORE (9) and SW_SHOWNOACTIVATE (4) are not replaced
+  // (verified live from a hidden-spawned process).
   public static string Front(IntPtr h) {
     if (IsIconic(h)) ShowWindow(h, 9);
     keybd_event(0x12, 0, 0, UIntPtr.Zero); keybd_event(0x12, 0, 2, UIntPtr.Zero);
     uint fgThread = GetWindowThreadProcessId(GetForegroundWindow(), IntPtr.Zero);
     uint me = GetCurrentThreadId();
     bool joined = fgThread != 0 && fgThread != me && AttachThreadInput(me, fgThread, true);
-    try { BringWindowToTop(h); ShowWindow(h, 5); SetForegroundWindow(h); }
+    try { BringWindowToTop(h); SetForegroundWindow(h); }
     finally { if (joined) AttachThreadInput(me, fgThread, false); }
+    if (!IsWindowVisible(h)) ShowWindow(h, 4);
     if (GetForegroundWindow() == h) return "front";
     SetWindowPos(h, new IntPtr(-1), 0, 0, 0, 0, 0x0013);
     SetWindowPos(h, new IntPtr(-2), 0, 0, 0, 0, 0x0013);

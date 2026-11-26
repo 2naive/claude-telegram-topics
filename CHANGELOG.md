@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.22.1 — 2026-11-26
+
+- **`/fg` no longer hides the terminal window.** Since 0.21.1 the helper
+  called `ShowWindow(h, SW_SHOW)`. It is spawned hidden (`windowsHide`, i.e.
+  `STARTUPINFO.wShowWindow = SW_HIDE`), and Windows replaces a process's first
+  `SW_SHOW` with the startup command — so the call hid the Windows Terminal
+  window instead of showing it: gone from the screen and the taskbar, tabs and
+  sessions alive, log line still `terminal front`. The `SW_SHOW` is removed (the target is visible by construction), a guard
+  re-shows the window with `SW_SHOWNOACTIVATE` if it ever ends up hidden, and
+  a test pins the helper to `SW_RESTORE` / `SW_SHOWNOACTIVATE` only.
+  Recovery for a window already hidden: `ShowWindow(hwnd, 4)` from any
+  normally started process.
+
 ## 0.22.0 — 2026-11-23
 
 - **Topics served by several consoles say so, and say who answered.** The
